@@ -86,11 +86,11 @@ class MetricCfg:
 
 SECTOR_PROFILES: dict[str, dict[str, MetricCfg]] = {
     "Technology": {
-        "price_to_earnings": MetricCfg("low",  good=15.0, bad=45.0, weight=0.20),
-        "price_to_sales":    MetricCfg("low",  good= 2.0, bad=15.0, weight=0.15),
-        "return_on_equity":  MetricCfg("high", good=20.0, bad= 6.0, weight=0.25),
-        "debt_to_equity":    MetricCfg("low",  good= 0.3, bad= 1.5, weight=0.20),
-        "ev_to_ebitda":      MetricCfg("low",  good=12.0, bad=35.0, weight=0.20),
+        "price_to_earnings": MetricCfg("low",  good=15.0, bad=45.0, weight=0.15),
+        "revenue_growth":    MetricCfg("high", good=25.0, bad= 0.0, weight=0.25),
+        "return_on_equity":  MetricCfg("high", good=20.0, bad= 6.0, weight=0.20),
+        "debt_to_equity":    MetricCfg("low",  good= 0.3, bad= 2.0, weight=0.25),
+        "ev_to_sales":       MetricCfg("low",  good= 2.0, bad=15.0, weight=0.15),
     },
     "Healthcare": {
         "price_to_earnings": MetricCfg("low",  good=15.0, bad=45.0, weight=0.20),
@@ -171,7 +171,9 @@ DEFAULT_PROFILE: dict[str, MetricCfg] = {
 
 def _score_metric(value: float, cfg: MetricCfg) -> float:
     """Return a 1–10 score by linearly interpolating between good and bad."""
-    lo, hi = (cfg.bad, cfg.good) if cfg.direction == "high" else (cfg.good, cfg.bad)
+    # lo=bad (score 1), hi=good (score 10). Works for both directions because
+    # "low" metrics have bad > good, so the slope naturally inverts.
+    lo, hi = cfg.bad, cfg.good
     return max(1.0, min(10.0, 1.0 + 9.0 * (value - lo) / (hi - lo)))
 
 
@@ -278,6 +280,24 @@ _SECTOR_OVERRIDES: dict[str, str] = {
 }
 
 
+def _fetch_revenue_growth(client: RESTClient, ticker: str) -> Optional[float]:
+    """Return YoY annual revenue growth as a percentage, or None if unavailable."""
+    rows = list(_call_with_retry(
+        client.list_financials_income_statements,
+        tickers=ticker,
+        timeframe="annual",
+        limit=10,
+    ))
+    rows.sort(key=lambda r: r.period_end, reverse=True)
+    if len(rows) < 2:
+        return None
+    rev_new = getattr(rows[0], "revenue", None)
+    rev_old = getattr(rows[1], "revenue", None)
+    if not rev_new or not rev_old or rev_old == 0:
+        return None
+    return (rev_new - rev_old) / abs(rev_old) * 100
+
+
 def _fetch_sector(client: RESTClient, ticker: str) -> str:
     if ticker in _SECTOR_OVERRIDES:
         return _SECTOR_OVERRIDES[ticker]
@@ -321,6 +341,12 @@ def rate_stock(
     sector = sector_override or _fetch_sector(client, ticker)
     config = SECTOR_PROFILES.get(sector, DEFAULT_PROFILE)
     ratios = _fetch_ratios(client, ticker)
+
+    if "revenue_growth" in config:
+        growth = _fetch_revenue_growth(client, ticker)
+        if growth is not None:
+            ratios["revenue_growth"] = growth
+
     score, breakdown = _compute_score(ratios, config)
 
     return {
