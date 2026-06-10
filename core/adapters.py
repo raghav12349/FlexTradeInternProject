@@ -91,6 +91,37 @@ def _anshu(mod: ModuleType, ticker: str, period: str) -> dict:
     }
 
 
+def _diya(mod: ModuleType, ticker: str, period: str) -> dict:
+    """Run diya's liquidity module and map its 0-1 composite onto [-1, 1].
+
+    liquidity_analysis(ticker, start, end) returns a 0-1 composite_score plus a
+    four-band signal (or "NO_DATA"). Fundamentals are annual, so we floor the
+    window at ~3 years. save_detail=False so it doesn't write JSON files.
+    """
+    end = date.today()
+    start = end - timedelta(days=max(period_to_days(period), 1095))
+    res = mod.liquidity_analysis(ticker, start.isoformat(), end.isoformat(),
+                                 save_detail=False)
+    if res.get("signal") == "NO_DATA" or res.get("composite_score") is None:
+        raise ValueError("no liquidity data (Massive Advanced tier required)")
+
+    comp = res["composite_score"]                 # 0..1
+    score = clip(round(comp * 2 - 1, 3))          # -> [-1, 1]
+    return {
+        "ticker": ticker.upper(),
+        "signal": "liquidity",
+        "score": score,
+        "rating": score_to_rating(score),
+        "details": {
+            "signal": res.get("signal"),
+            "composite_score": comp,
+            "operational_score": res.get("operational_score"),
+            "financial_score": res.get("financial_score"),
+            "n_periods": res.get("n_periods"),
+        },
+    }
+
+
 ADAPTERS: dict[str, dict] = {
     "aarav": {
         "name": "macd",
@@ -103,5 +134,11 @@ ADAPTERS: dict[str, dict] = {
         "owner": "anshu",
         "category": "Fundamentals",
         "analyze": _anshu,
+    },
+    "diya": {
+        "name": "liquidity",
+        "owner": "diya",
+        "category": "Fundamentals",
+        "analyze": _diya,
     },
 }
