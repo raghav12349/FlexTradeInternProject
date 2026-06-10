@@ -52,11 +52,9 @@ import json
 import requests
 
 
-# ======================================================================
-# EDIT THIS WHEN THE API KEY CHANGES  (kept as a header so it's easy to swap)
-# ======================================================================
-MASSIVE_API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
-# ======================================================================
+MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY")
+if not MASSIVE_API_KEY:
+    raise RuntimeError("MASSIVE_API_KEY environment variable is not set")
 
 BASE_URL = "https://api.massive.com"
 HEADERS = {"Authorization": f"Bearer {MASSIVE_API_KEY}"}

@@ -2,7 +2,10 @@ import requests
 from polygon import RESTClient
 from datetime import datetime
 
-API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
+import os
+API_KEY = os.environ.get("POLYGON_API_KEY")
+if not API_KEY:
+    raise RuntimeError("POLYGON_API_KEY environment variable is not set")
 
 EARLIEST_DATE = "2015-01-01"
 
