@@ -13,37 +13,6 @@ interns' factor modules:
 
     from liquidity_analysis import liquidity_analysis
     result = liquidity_analysis("AAPL", "2021-01-01", "2023-12-31")
-
-------------------------------------------------------------------------
-METHODOLOGY
-------------------------------------------------------------------------
-1. Operational liquidity  -> OCF Ratio     = CFO / Current Liabilities
-2. Future liquidity       -> FCF Coverage  = FCF / (Dividends + Interest)
-                             where FCF      = CFO - CAPEX
-3. Composite score        = 0.4 * OCF_normalised + 0.6 * FCF_normalised
-
-Each raw ratio is turned into a 0-1 "normalised" score by piecewise-linear
-interpolation anchored at the band boundaries (see ANCHORS below), then the
-weighted composite is mapped back onto the same four bands.
-
-Raw-ratio bands:
-    OCF Ratio:     STRONG > 1.0 | ADEQUATE 0.5-1.0 | WATCH 0.25-0.5 | WEAK < 0.25
-    FCF Coverage:  STRONG > 1.5 | ADEQUATE 1.0-1.5 | WATCH 0.5-1.0  | WEAK < 0.5
-
-------------------------------------------------------------------------
-DATA SOURCE  -  Massive.com REST API  (https://massive.com/docs)
-------------------------------------------------------------------------
-Three "annual" financial statements are pulled and joined by fiscal year:
-    cash-flow-statements  -> CFO, CAPEX, Dividends paid
-    income-statements     -> Interest expense
-    balance-sheets        -> Current liabilities
-
-NOTE: the original spec assumed interest expense lives on the cash flow
-statement; on Massive it is on the income statement (`interest_expense`,
-an accrual figure that is a close proxy for "interest paid").
-
-REQUIREMENTS:  pip install requests   (only third-party dependency)
-Fundamentals require a Massive "Advanced" tier API key.
 """
 
 import os
