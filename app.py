@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 
+from core.env import load_local_keys
 from core.recommender import rank
 from core.runner import analyze_ticker, export_csv, run
 from core.universe import resolve
@@ -60,6 +61,7 @@ def interactive(period: str) -> None:
 
 
 def main() -> None:
+    load_local_keys()  # pick up POLYGON_API_KEY / MASSIVE_API_KEY from .keys.env if present
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tickers", nargs="*", help="Tickers to analyse. Omit for interactive mode.")
     parser.add_argument("--universe", help="Named universe/sector (e.g. MEGACAP, TECH) instead of listing tickers")

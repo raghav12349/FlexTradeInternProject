@@ -309,6 +309,8 @@ class Dashboard(tk.Tk):
 
 
 def main() -> None:
+    from core.env import load_local_keys
+    load_local_keys()  # pick up API keys from .keys.env if present
     Dashboard().mainloop()
 
 
