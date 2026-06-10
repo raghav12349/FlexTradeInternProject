@@ -72,6 +72,7 @@ def _aarav(mod: ModuleType, ticker: str, period: str) -> dict:
         "signal": "macd",
         "score": score,
         "rating": score_to_rating(score),
+        "native_score": f"{raw:g}/10",       # aarav's own 1-10 scale
         "native_rating": comp.get("recommendation"),
         "breakdown": lines,
         "details": {"raw_score_1_10": raw, "trend": comp.get("trend"),
@@ -108,6 +109,7 @@ def _anshu(mod: ModuleType, ticker: str, period: str) -> dict:
         "signal": "dividends",
         "score": score,
         "rating": score_to_rating(score),
+        "native_score": str(raw),            # anshu's own integer score
         "native_rating": sig,
         "breakdown": lines,
         "details": {"raw_score": raw, "signal": sig,
@@ -140,6 +142,7 @@ def _diya(mod: ModuleType, ticker: str, period: str) -> dict:
         "signal": "liquidity",
         "score": score,
         "rating": score_to_rating(score),
+        "native_score": f"{comp:.2f}",       # diya's own 0-1 composite
         "native_rating": res.get("signal"),
         "breakdown": lines,
         "details": {"signal": res.get("signal"), "composite_score": comp,

@@ -94,11 +94,11 @@ class Dashboard(tk.Tk):
                                 show="tree headings", height=5)
             tree.heading("#0", text="Signal")
             tree.heading("owner", text="Owner")
-            tree.heading("score", text="Score")
+            tree.heading("score", text="Their Score")
             tree.heading("rating", text="Their Rating")
             tree.column("#0", width=150)
             tree.column("owner", width=64, anchor="center")
-            tree.column("score", width=60, anchor="center")
+            tree.column("score", width=80, anchor="center")
             tree.column("rating", width=120, anchor="center")
             tree.pack(fill="both", expand=True)
             tree.bind("<<TreeviewSelect>>", self._on_signal_select)
@@ -118,8 +118,9 @@ class Dashboard(tk.Tk):
         bdbar.pack(side="right", fill="y")
         self.breakdown.pack(side="left", fill="both", expand=True)
 
-        # accumulating table
-        tbl = ttk.LabelFrame(parent, text="Tickers", padding=6)
+        # accumulating table (cross-ticker comparison uses the normalized -1..+1
+        # scale so columns are comparable and feed the composite)
+        tbl = ttk.LabelFrame(parent, text="Tickers — normalized -1..+1 for comparison", padding=6)
         tbl.pack(fill="both", expand=True, padx=12, pady=8)
         cols = ["Ticker", *self.signal_names, "Composite"]
         self.table = ttk.Treeview(tbl, columns=cols, show="headings", height=6)
@@ -153,7 +154,7 @@ class Dashboard(tk.Tk):
                 if s["category"] != cat:
                     continue
                 sig = report["signals"].get(s["name"], {})
-                tree.item(s["name"], values=(s["owner"], _fmt(sig.get("score")),
+                tree.item(s["name"], values=(s["owner"], sig.get("native_score", "—"),
                                              sig.get("native_rating", "—")))
 
         self.composite_var.set(

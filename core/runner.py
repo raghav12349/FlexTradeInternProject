@@ -50,7 +50,8 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
         if entry["error"] is not None:
             err = f"ERR:{entry['error'].__class__.__name__}"
             signals[name] = {"owner": owner, "score": None, "rating": err,
-                             "native_rating": err, "breakdown": [str(entry["error"])]}
+                             "native_score": "—", "native_rating": err,
+                             "breakdown": [str(entry["error"])]}
             continue
         # Pluggable per-person code — isolate failures too.
         try:
@@ -58,20 +59,29 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
                 result = entry["adapter"]["analyze"](entry["module"], ticker, period)
             else:
                 result = entry["module"].analyze(ticker, period=period)
+            score = result.get("score")
+            # native_score is the module's own scale (e.g. "5/10", "11", "0.84");
+            # placeholders that have no other scale fall back to the normalized number.
+            native_score = result.get("native_score")
+            if native_score is None:
+                native_score = f"{score:+.3f}" if isinstance(score, (int, float)) else "—"
             signals[name] = {
                 "owner": owner,
-                "score": result.get("score"),
+                "score": score,
                 "rating": result.get("rating"),
+                "native_score": native_score,
                 "native_rating": result.get("native_rating") or result.get("rating"),
                 "breakdown": _breakdown(result),
             }
         except NotImplementedError:
             signals[name] = {"owner": owner, "score": None, "rating": "N/A",
-                             "native_rating": "N/A", "breakdown": ["not implemented yet"]}
+                             "native_score": "—", "native_rating": "N/A",
+                             "breakdown": ["not implemented yet"]}
         except Exception as exc:  # noqa: BLE001
             err = f"ERR:{exc.__class__.__name__}"
             signals[name] = {"owner": owner, "score": None, "rating": err,
-                             "native_rating": err, "breakdown": [str(exc)]}
+                             "native_score": "—", "native_rating": err,
+                             "breakdown": [str(exc)]}
 
     # Composite: simple equal-weight mean of whatever scored. Swap this for a
     # weighted / rank-based scheme once everyone's signal is finalised.
