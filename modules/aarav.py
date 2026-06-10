@@ -3,7 +3,9 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-API_KEY = os.environ.get("POLYGON_API_KEY", "UPTtLEsTavIccF5ESguZSdtWW3zX93WW")
+API_KEY = os.environ.get("POLYGON_API_KEY")
+if not API_KEY:
+    raise RuntimeError("POLYGON_API_KEY environment variable is not set")
 BASE_URL = "https://api.polygon.io"
 
 # Valid timeframe keys the user/UI can pass in
