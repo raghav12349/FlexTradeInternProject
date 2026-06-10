@@ -77,7 +77,9 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
             signals[name] = {"owner": owner, "score": None, "rating": "N/A",
                              "native_score": "—", "native_rating": "N/A",
                              "breakdown": ["not implemented yet"]}
-        except Exception as exc:  # noqa: BLE001
+        # Some modules call sys.exit() on API errors (raises SystemExit, which is
+        # NOT an Exception) — catch it too so one module can't kill the whole run.
+        except (Exception, SystemExit) as exc:  # noqa: BLE001
             err = f"ERR:{exc.__class__.__name__}"
             signals[name] = {"owner": owner, "score": None, "rating": err,
                              "native_score": "—", "native_rating": err,

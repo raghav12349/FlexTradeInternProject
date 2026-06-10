@@ -249,10 +249,100 @@ def _samar(mod: ModuleType, ticker: str, period: str) -> dict:
     }
 
 
+def _justin(mod: ModuleType, ticker: str, period: str) -> dict:
+    """justin's sector-aware financial-ratios rater. Native 1-10 -> [-1, 1].
+    He outputs a numeric score (no buy/sell label), so the native rating IS the
+    score out of 10."""
+    res = mod.rate_stock(ticker)
+    raw = res.get("score")
+    if raw is None:
+        raise ValueError(f"no ratios for {ticker}")
+    score = clip(round((raw - 5.5) / 4.5, 3))
+    lines = [f"Sector: {res.get('sector', '?')}  —  score {raw:.1f}/10"]
+    for metric, info in (res.get("breakdown") or {}).items():
+        lines.append(f"{metric}: {info.get('value'):.3f} -> {info.get('score'):.1f}/10")
+    return {
+        "ticker": ticker.upper(),
+        "signal": "ratios",
+        "score": score,
+        "rating": score_to_rating(score),
+        "native_score": f"{raw:.1f}/10",
+        "native_rating": f"{raw:.1f}/10",
+        "breakdown": lines,
+        "details": {"score_1_10": raw, "sector": res.get("sector")},
+    }
+
+
+def _anshu2(mod: ModuleType, ticker: str, period: str) -> dict:
+    """anshu's second signal: short interest / squeeze. Native integer -> [-1, 1]."""
+    earliest = date(2015, 1, 1)
+    end = date.today()
+    start = end - timedelta(days=max(period_to_days(period), 365))
+    if start < earliest:
+        start = earliest
+
+    res = mod.rate_ticker(ticker, start.isoformat(), end.isoformat())
+    sig = res.get("signal")
+    if sig in ("N/A", "NO DATA", "ERROR"):
+        raise ValueError("; ".join(res.get("reasoning") or []) or str(sig))
+
+    raw = res.get("score", 0)
+    score = clip(round(raw / 10.0, 3))
+    head = f"Signal {sig}  (score {raw})"
+    if res.get("short_pct_float") is not None:
+        head += f"  short {res['short_pct_float']}% of float"
+    if res.get("days_to_cover") is not None:
+        head += f"  days-to-cover {res['days_to_cover']}"
+    if res.get("squeeze_alert"):
+        head += "  ⚡ squeeze alert"
+    lines = [head, *(res.get("reasoning") or [])]
+    return {
+        "ticker": ticker.upper(),
+        "signal": "short_interest",
+        "score": score,
+        "rating": score_to_rating(score),
+        "native_score": str(raw),
+        "native_rating": sig,
+        "breakdown": lines,
+        "details": {"raw_score": raw, "signal": sig,
+                    "short_pct_float": res.get("short_pct_float"),
+                    "days_to_cover": res.get("days_to_cover"),
+                    "squeeze_alert": res.get("squeeze_alert")},
+    }
+
+
+# cosmo's insider signal is categorical (BULLISH/BEARISH/NEUTRAL); map to a
+# coarse score so it contributes to the composite.
+_COSMO_SCORE = {"BULLISH": 0.5, "BEARISH": -0.5, "NEUTRAL": 0.0}
+
+
+def _cosmo(mod: ModuleType, ticker: str, period: str) -> dict:
+    """cosmo's Form-4 insider-transaction signal. Categorical -> coarse score."""
+    end = date.today()
+    start = end - timedelta(days=max(period_to_days(period), 180))
+    txns = mod.fetch_transactions(ticker, start.isoformat(), end.isoformat(), 200)
+    res = mod.compute_signal(txns)
+    sig = res.get("signal", "NEUTRAL")
+    score = _COSMO_SCORE.get(sig, 0.0)
+    return {
+        "ticker": ticker.upper(),
+        "signal": "insider",
+        "score": score,
+        "rating": score_to_rating(score),
+        "native_score": "—",                 # categorical, no number
+        "native_rating": sig,
+        "breakdown": [res.get("reason", "")],
+        "details": {"signal": sig, "reason": res.get("reason")},
+    }
+
+
 ADAPTERS: dict[str, dict] = {
     "samar": {"name": "momentum", "owner": "samar", "category": "Technicals", "analyze": _samar},
     "aarav": {"name": "macd", "owner": "aarav", "category": "Technicals", "analyze": _aarav},
     "aarav2": {"name": "rsi", "owner": "aarav2", "category": "Technicals", "analyze": _aarav2},
+    "justin": {"name": "ratios", "owner": "justin", "category": "Fundamentals", "analyze": _justin},
     "anshu": {"name": "dividends", "owner": "anshu", "category": "Fundamentals", "analyze": _anshu},
     "diya": {"name": "liquidity", "owner": "diya", "category": "Fundamentals", "analyze": _diya},
+    "anshu2": {"name": "short_interest", "owner": "anshu2", "category": "Sentiment", "analyze": _anshu2},
+    "cosmo": {"name": "insider", "owner": "cosmo", "category": "Sentiment", "analyze": _cosmo},
 }

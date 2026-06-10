@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import importlib
 
-OWNERS = ["samar", "aarav", "aarav2", "justin", "anshu", "cosmo", "diya", "kavin"]
+OWNERS = ["samar", "aarav", "aarav2", "justin", "anshu", "anshu2", "cosmo", "diya", "kavin"]
 
 
 def load_signals() -> list[dict]:
@@ -44,7 +44,7 @@ def load_signals() -> list[dict]:
         error = None
         try:
             module = importlib.import_module(f"modules.{owner}")
-        except Exception as exc:  # noqa: BLE001 - capture, don't crash the run
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - capture, incl. sys.exit() at import
             error = exc
 
         adapter = ADAPTERS.get(owner)
