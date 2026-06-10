@@ -5,3 +5,5 @@ data/*.csv
 .DS_Store
 .keys.env
 .secrets/
+modules/.cache/
+*_liquidity.json
