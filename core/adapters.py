@@ -151,8 +151,108 @@ def _diya(mod: ModuleType, ticker: str, period: str) -> dict:
     }
 
 
+def _aarav2(mod: ModuleType, ticker: str, period: str) -> dict:
+    """aarav's second indicator: RSI. Native 1-10 composite -> [-1, 1]."""
+    tf = _AARAV_TF.get(period.lower(), "ALL")  # context window; RSI uses full series
+    end = date.today()
+    start = end - timedelta(days=730)
+
+    try:
+        details = mod.fetch_ticker_details(ticker)
+    except Exception:  # noqa: BLE001
+        details = None
+    prices, volumes = mod.fetch_daily_prices(ticker, start.isoformat(), end.isoformat())
+    rsi_series = mod.fetch_rsi_series(ticker)
+    res = mod.analyze(ticker, prices, volumes, details, rsi_series)
+
+    comp = res.get("composite")
+    if not comp or comp.get("score") is None:
+        raise ValueError(f"no RSI data for {ticker}")
+    raw = comp["score"]                       # 1..10
+    score = clip(round((raw - 5.5) / 4.5, 3))
+
+    rsi = res.get("rsi") or {}
+    ctx = res.get("context") or {}
+    cap = res.get("cap") or {}
+    lines = [
+        f"{res.get('company', ticker)} — {cap.get('tier', '?')}, price ${ctx.get('price', '?')}",
+        f"RSI {rsi.get('current', '?')} ({rsi.get('label', '?')}), "
+        f"regime {rsi.get('regime', '?')} {rsi.get('regime_days', '?')}d, "
+        f"percentile {rsi.get('percentile', '?')}",
+        f"Composite {raw}/10 -> {comp.get('recommendation')} ({comp.get('trend')})",
+    ]
+    return {
+        "ticker": ticker.upper(),
+        "signal": "rsi",
+        "score": score,
+        "rating": score_to_rating(score),
+        "native_score": f"{raw:g}/10",
+        "native_rating": comp.get("recommendation"),
+        "breakdown": lines,
+        "details": {"raw_score_1_10": raw, "rsi": rsi.get("current"),
+                    "label": rsi.get("label"), "regime": rsi.get("regime")},
+    }
+
+
+# samar scores against a fixed ~110-stock universe; that's the same for every
+# ticker, so compute it once per process and reuse.
+_SAMAR_UNIVERSE: dict = {}
+
+
+def _samar_universe(mod: ModuleType):
+    if "data" not in _SAMAR_UNIVERSE:
+        snap = mod.get_market_snapshots()
+        universe = list(mod.DIVERSE_UNIVERSE.keys())
+        momentum_dict, _ = mod.compute_momentum(universe, snap)
+        cap_tiers = mod.build_cap_tiers()
+        results, stats = mod.standardize(momentum_dict, mod.DIVERSE_UNIVERSE, cap_tiers)
+        _SAMAR_UNIVERSE["data"] = (snap, momentum_dict, results, stats, cap_tiers)
+    return _SAMAR_UNIVERSE["data"]
+
+
+def _samar(mod: ModuleType, ticker: str, period: str) -> dict:
+    """samar's cross-sectional 3/6/12 momentum, scored vs his diverse universe
+    (replicates run_vs_diverse without the printing). Native 1-10 -> [-1, 1]."""
+    ticker = ticker.upper().strip()
+    snap, momentum_dict, results, stats, cap_tiers = _samar_universe(mod)
+
+    if ticker in results:
+        v = results[ticker]
+    else:
+        extra, _ = mod.compute_momentum([ticker], snap)
+        if ticker not in extra:
+            raise ValueError(f"no valid momentum data for {ticker}")
+        v = mod._score_extra_ticker(ticker, extra[ticker], momentum_dict, results,
+                                    stats, mod.DIVERSE_UNIVERSE, cap_tiers)
+
+    raw = v["score_1_10"]                      # 1..10
+    score = clip(round((raw - 5.5) / 4.5, 3))
+    sec = v.get("z_combined_sector")
+    lines = [
+        f"12-1 mom {v['m12_pct']:+.2f}% (z {v['z12']:+.2f})",
+        f"6-1  mom {v['m6_pct']:+.2f}% (z {v['z6']:+.2f})",
+        f"3-1  mom {v['m3_pct']:+.2f}% (z {v['z3']:+.2f})",
+        f"Combined z {v['z_combined']:+.2f}  strong={v['is_strong']}  shape={v['shape']}"
+        + (f"  sector-rel z {sec:+.2f}" if sec is not None else ""),
+        f"Score {raw:.1f}/10 -> {v['recommendation']}",
+    ]
+    return {
+        "ticker": ticker.upper(),
+        "signal": "momentum",
+        "score": score,
+        "rating": score_to_rating(score),
+        "native_score": f"{raw:.1f}/10",
+        "native_rating": v["recommendation"],   # STRONG BUY / BUY / HOLD / DON'T BUY
+        "breakdown": lines,
+        "details": {"score_1_10": raw, "z_combined": v["z_combined"],
+                    "is_strong": v["is_strong"], "shape": v["shape"]},
+    }
+
+
 ADAPTERS: dict[str, dict] = {
+    "samar": {"name": "momentum", "owner": "samar", "category": "Technicals", "analyze": _samar},
     "aarav": {"name": "macd", "owner": "aarav", "category": "Technicals", "analyze": _aarav},
+    "aarav2": {"name": "rsi", "owner": "aarav2", "category": "Technicals", "analyze": _aarav2},
     "anshu": {"name": "dividends", "owner": "anshu", "category": "Fundamentals", "analyze": _anshu},
     "diya": {"name": "liquidity", "owner": "diya", "category": "Fundamentals", "analyze": _diya},
 }
