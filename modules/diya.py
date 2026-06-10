@@ -208,7 +208,7 @@ def _summarise(detail, save_detail, detail_dir):
 # ======================================================================
 # Main entry point
 # ======================================================================
-def liquidity_analysis(ticker, start_date, end_date, save_detail=True, detail_dir="."):
+def liquidity_analysis(ticker, start_date, end_date, save_detail=False, detail_dir="."):
     """Score a stock's liquidity over an explicit date range.
 
     Parameters
