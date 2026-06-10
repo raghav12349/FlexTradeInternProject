@@ -297,12 +297,92 @@ INDEX_FALLBACK_SECTOR = {
     "H": "Utilities",     # Dow Jones Utility Average
 }
 
+# Single-sector indexes -- SecZ within these is mathematically near-identical
+# to z_combined (the whole universe IS the "sector"), so it's not a useful
+# diversification check. We still compute it (no harm), but the run() output
+# notes this so users don't read meaning into a redundant number.
+SINGLE_SECTOR_INDEXES = {"G", "H"}
+
+# Roughly-expected constituent counts per index, for sanity-checking the
+# Wikipedia scrape. If a scrape returns a count outside [lo, hi], the page
+# format likely changed and the scraped columns may be wrong -- warn loudly
+# rather than silently using bad data.
+EXPECTED_COUNTS = {
+    "A": (480, 520),   # S&P 500
+    "B": (28, 32),     # Dow 30
+    "C": (95, 105),    # Nasdaq-100
+    "D": (380, 420),   # S&P MidCap 400
+    "E": (580, 620),   # S&P SmallCap 600
+    "F": (95, 105),    # S&P 100
+    "G": (18, 22),     # Dow Transports (20)
+    "H": (13, 17),     # Dow Utilities (15)
+    "I": (950, 1050),  # Russell 1000
+    "J": (60, 75),     # Dividend Aristocrats
+}
+
+# Local cache of scraped constituents (tickers + sectors), so a Wikipedia
+# outage or HTML-format change doesn't hard-fail every run -- falls back to
+# the last good scrape, with a clear warning that data may be stale.
+CACHE_DIR = os.path.join(HERE, ".cache")
+CACHE_MAX_AGE_DAYS = 30
+
+def _cache_path(index_key):
+    return os.path.join(CACHE_DIR, f"constituents_{index_key}.json")
+
+def _load_constituents_cache(index_key):
+    path = _cache_path(index_key)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        fetched = data.get("fetched")
+        if fetched:
+            try:
+                age_days = (date.today() - date.fromisoformat(fetched)).days
+                if age_days > CACHE_MAX_AGE_DAYS:
+                    print(f"  ⚠ Cached copy is {age_days} days old (> {CACHE_MAX_AGE_DAYS}-day limit) -- using anyway since live scrape failed.")
+            except Exception:
+                pass
+        return data["tickers"], data["sectors"], fetched
+    except Exception:
+        return None
+
+def _save_constituents_cache(index_key, tickers, sectors):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    try:
+        with open(_cache_path(index_key), "w") as f:
+            json.dump({"tickers": tickers, "sectors": sectors,
+                       "fetched": date.today().isoformat()}, f)
+    except Exception:
+        pass  # caching is best-effort; never fail the run over it
+
 def get_constituents(index_key):
     name, wiki_url, _short, _cap = INDEXES[index_key]
-    tickers, nm, secs = get_constituents_from_url(wiki_url, name)
+
+    try:
+        tickers, nm, secs = get_constituents_from_url(wiki_url, name)
+        if not tickers:
+            raise RuntimeError("scrape returned 0 tickers")
+    except Exception as e:
+        print(f"  ⚠ Live scrape failed ({e}) -- trying cached copy...")
+        cached = _load_constituents_cache(index_key)
+        if cached is None:
+            raise RuntimeError(f"Could not fetch {name} (live scrape failed and no cache available)")
+        tickers, secs, fetched = cached
+        print(f"  Using cached {name} constituents from {fetched} ({len(tickers)} tickers)")
+        return tickers, name, secs
+
+    # Sanity-check the count against expectations -- catches silent
+    # table-format changes (e.g. wrong table picked, rowspan misparse).
+    lo, hi = EXPECTED_COUNTS.get(index_key, (0, 10**9))
+    if not (lo <= len(tickers) <= hi):
+        print(f"  ⚠ {name}: scraped {len(tickers)} tickers, expected ~{lo}-{hi}. "
+              f"Wikipedia's table format may have changed -- results could be wrong.")
+
     fallback = INDEX_FALLBACK_SECTOR.get(index_key)
     if fallback and (not secs or all(v == "Unknown" for v in secs.values())):
         secs = {t: fallback for t in tickers}
+
+    _save_constituents_cache(index_key, tickers, secs)
     return tickers, nm, secs
 
 def get_constituents_from_url(wiki_url, name):
@@ -797,10 +877,19 @@ def run(index_key):
         if count >= n / 2:
             print(f"\n  ⚠ CONCENTRATION: {count}/{n} of the top stocks are '{most_common}' — "
                   f"this top-{n} is mostly one sector, not a diversified picture of relative strength.")
-    print(f"\n  SecZ = sector-relative z_combined (vs peers in same GICS sector, '--' = sector unknown or "
+    n_secz = sum(1 for v in results.values() if v["z_combined_sector"] is not None)
+    n_capz = sum(1 for v in results.values() if v.get("z_combined_cap") is not None)
+    print(f"\n  Coverage: SecZ available for {n_secz}/{len(results)} stocks, "
+          f"CapZ for {n_capz}/{len(results)} (rest show '--' -- group too small/unknown to standardize).")
+    print(f"  SecZ = sector-relative z_combined (vs peers in same GICS sector, '--' = sector unknown or "
           f"too small to standardize). Use it to compare stocks ACROSS sectors fairly.")
     print(f"  CapZ = cap-tier-relative z_combined (vs peers in the same crude size tier -- "
           f"Large/Mid/Small by index membership, '--' = tier too small to standardize).")
+    if index_key in SINGLE_SECTOR_INDEXES:
+        print(f"  Note: {index_name} is single-sector by definition -- SecZ here is "
+              f"nearly identical to Zcomb and not a meaningful diversification check.")
+    print(f"  Recommendation = a label derived purely from this script's z-score/shape math, "
+          f"NOT a backtested or validated trading signal -- treat as a relative-strength summary.")
 
     print(f"\n✓ Done. (Single-window momentum >=100% is excluded as suspect data.)")
 
