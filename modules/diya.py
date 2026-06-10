@@ -13,6 +13,7 @@ interns' factor modules:
 
     from liquidity_analysis import liquidity_analysis
     result = liquidity_analysis("AAPL", "2021-01-01", "2023-12-31")
+
 """
 
 import os
@@ -21,9 +22,11 @@ import json
 import requests
 
 
-MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY")
-if not MASSIVE_API_KEY:
-    raise RuntimeError("MASSIVE_API_KEY environment variable is not set")
+# ======================================================================
+# EDIT THIS WHEN THE API KEY CHANGES  (kept as a header so it's easy to swap)
+# ======================================================================
+MASSIVE_API_KEY = "YOUR_API_KEY_HERE"
+# ======================================================================
 
 BASE_URL = "https://api.massive.com"
 HEADERS = {"Authorization": f"Bearer {MASSIVE_API_KEY}"}
@@ -151,12 +154,74 @@ def _index_by_fiscal_year(results):
     return indexed
 
 
+def _describe(ticker, signal, ocf_value, fcf_value, ocf_band, fcf_band,
+              operational_score, financial_score):
+    """Company-specific plain-English description of the liquidity signal.
+
+    Always three sentences:
+      1. "{TICKER} has a {SIGNAL} position with {OCF_BAND} operational and
+         {FCF_BAND} financial performance."
+      2. "The OCF ratio is X, and the FCF coverage ratio is Y."
+      3. "Therefore, {conclusion}."
+
+    WATCH / WEAK conclusions are case-specific (operational drag, financial
+    drag, or both). NO_DATA returns a short fallback with no ratio lines.
+    """
+    # NO_DATA: no ratio values exist, skip the opening and ratio lines.
+    if signal == "NO_DATA" or ocf_value is None or fcf_value is None:
+        return (f"{ticker}: insufficient annual filings to assess liquidity "
+                "for this ticker and date range.")
+
+    opening = (f"{ticker} has a {signal} liquidity position with "
+               f"{ocf_band} operational performance and "
+               f"{fcf_band} financial performance.")
+
+    ratios = (f"The OCF ratio is {ocf_value:.2f}, "
+              f"and the FCF coverage ratio is {fcf_value:.2f}.")
+
+    # --- Conclusion: band-specific logic ----------------------------------
+    if signal == "STRONG":
+        conclusion = ("operating cash flow comfortably covers near-term "
+                      "liabilities and leaves ample free cash for all debt "
+                      "and dividend obligations.")
+    elif signal == "ADEQUATE":
+        conclusion = ("the company generates enough cash to cover short-term "
+                      "liabilities and obligations, but with only a modest buffer.")
+    else:
+        # WATCH / WEAK: identify which leg is the drag and explain it.
+        # Treat both as jointly weak when scores are within this margin.
+        op = operational_score if operational_score is not None else 0.0
+        fin = financial_score if financial_score is not None else 0.0
+        margin = 0.1
+
+        if abs(op - fin) <= margin:
+            driver = ("both legs are weak: operating cash flow is low relative "
+                      "to current liabilities, and free cash flow gives little "
+                      "cover for debt and dividend obligations")
+        elif op < fin:
+            driver = ("the operational leg is the main drag — operating cash "
+                      "flow is low relative to current liabilities, so the "
+                      "business is not generating enough cash to comfortably "
+                      "cover what is due within the year")
+        else:
+            driver = ("the forward-looking leg is the main drag — after capital "
+                      "spending, free cash flow gives limited cover for debt "
+                      "interest and dividend obligations")
+
+        if signal == "WATCH":
+            conclusion = f"liquidity is thin with little margin for error, and {driver}."
+        else:
+            conclusion = f"cash is falling short of near-term obligations, and {driver}."
+
+    return f"{opening} {ratios} Therefore, {conclusion}"
+
+
 def _summarise(detail, save_detail, detail_dir):
     """Persist the full breakdown (optional) and return the compact result.
 
     `detail` is the complete internal record. We optionally write it to a JSON
     file so nothing is lost, then return ONLY the fields the dashboard needs:
-    number of periods used, signal, composite score, and the two part-scores.
+    signal, a one-sentence description, composite score, and the two part-scores.
     """
     if save_detail:
         os.makedirs(detail_dir, exist_ok=True)
@@ -166,8 +231,16 @@ def _summarise(detail, save_detail, detail_dir):
             json.dump(detail, handle, indent=2)
 
     return {
-        "n_periods": len(detail["years_used"]),     # e.g. 3 years -> 3
         "signal": detail["signal"],                 # STRONG/ADEQUATE/WATCH/WEAK
+        "description": _describe(
+            detail["ticker"], detail["signal"],
+            (detail["ocf_ratio"] or {}).get("value"),
+            (detail["fcf_coverage"] or {}).get("value"),
+            (detail["ocf_ratio"] or {}).get("band"),
+            (detail["fcf_coverage"] or {}).get("band"),
+            detail["operational_score"],
+            detail["financial_score"],
+        ),
         "composite_score": detail["liquidity_score"],
         "operational_score": detail["operational_score"],  # normalised OCF (the 0.4 part)
         "financial_score": detail["financial_score"],      # normalised FCF (the 0.6 part)
@@ -177,7 +250,7 @@ def _summarise(detail, save_detail, detail_dir):
 # ======================================================================
 # Main entry point
 # ======================================================================
-def liquidity_analysis(ticker, start_date, end_date, save_detail=False, detail_dir="."):
+def liquidity_analysis(ticker, start_date, end_date, save_detail=True, detail_dir="."):
     """Score a stock's liquidity over an explicit date range.
 
     Parameters
@@ -198,8 +271,8 @@ def liquidity_analysis(ticker, start_date, end_date, save_detail=False, detail_d
     -------
     dict
         Compact result with ONLY:
-          - "n_periods"         number of annual periods used (e.g. 3)
           - "signal"            STRONG / ADEQUATE / WATCH / WEAK (or "NO_DATA")
+          - "description"       one-sentence plain-English reading of the signal
           - "composite_score"   final 0-1 liquidity score
           - "operational_score" normalised OCF sub-score (the 0.4 weight part)
           - "financial_score"   normalised FCF sub-score (the 0.6 weight part)
@@ -350,14 +423,3 @@ def liquidity_analysis(ticker, start_date, end_date, save_detail=False, detail_d
         "warnings": warnings,
     }
     return _summarise(detail, save_detail, detail_dir)
-
-
-# ======================================================================
-# Run the file directly to smoke-test it:  python liquidity_analysis.py
-# ======================================================================
-if __name__ == "__main__":
-    # Example: Apple's liquidity over fiscal years ending 2021-2023.
-    # Returns the compact summary; the full breakdown is saved to a JSON file.
-    demo = liquidity_analysis("GOOGL", "2021-01-01", "2023-12-31")
-    print(json.dumps(demo, indent=2))
-  
