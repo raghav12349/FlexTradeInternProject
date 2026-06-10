@@ -1,6 +1,8 @@
 """Run every registered module across tickers and assemble the results."""
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 
 import pandas as pd
@@ -55,10 +57,12 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
             continue
         # Pluggable per-person code — isolate failures too.
         try:
-            if entry["adapter"]:
-                result = entry["adapter"]["analyze"](entry["module"], ticker, period)
-            else:
-                result = entry["module"].analyze(ticker, period=period)
+            # Silence modules that print progress to stdout, so the table stays clean.
+            with contextlib.redirect_stdout(io.StringIO()):
+                if entry["adapter"]:
+                    result = entry["adapter"]["analyze"](entry["module"], ticker, period)
+                else:
+                    result = entry["module"].analyze(ticker, period=period)
             score = result.get("score")
             # native_score is the module's own scale (e.g. "5/10", "11", "0.84");
             # placeholders that have no other scale fall back to the normalized number.

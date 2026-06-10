@@ -19,6 +19,7 @@ To integrate a new non-conforming module, add an entry to ADAPTERS.
 """
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 from types import ModuleType
 
@@ -318,6 +319,11 @@ _COSMO_SCORE = {"BULLISH": 0.5, "BEARISH": -0.5, "NEUTRAL": 0.0}
 
 def _cosmo(mod: ModuleType, ticker: str, period: str) -> dict:
     """cosmo's Form-4 insider-transaction signal. Categorical -> coarse score."""
+    # cosmo hardcodes a placeholder API_KEY and reads it at call time; inject the
+    # real key from the env without editing their file.
+    key = os.environ.get("MASSIVE_API_KEY")
+    if key:
+        mod.API_KEY = key
     end = date.today()
     start = end - timedelta(days=max(period_to_days(period), 180))
     txns = mod.fetch_transactions(ticker, start.isoformat(), end.isoformat(), 200)
