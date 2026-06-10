@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from types import ModuleType
 
+from core.massive import period_to_days
 from core.rating import clip, score_to_rating
 
 # our period strings -> aarav's timeframe keys
@@ -56,11 +57,51 @@ def _aarav(mod: ModuleType, ticker: str, period: str) -> dict:
     }
 
 
+def _anshu(mod: ModuleType, ticker: str, period: str) -> dict:
+    """Run anshu's dividend-growth/payout module and map its score onto [-1, 1].
+
+    rate_ticker(ticker, start, end) returns an integer score (~ -11..+18) plus a
+    signal string. Dividend analysis needs a long window, so we floor the range
+    at 2 years and clamp to anshu's earliest supported date (2015-01-01).
+    """
+    earliest = date(2015, 1, 1)
+    end = date.today()
+    start = end - timedelta(days=max(period_to_days(period), 730))
+    if start < earliest:
+        start = earliest
+
+    res = mod.rate_ticker(ticker, start.isoformat(), end.isoformat())
+    sig = res.get("signal")
+    if sig in ("N/A", "ERROR"):
+        raise ValueError("; ".join(res.get("reasoning") or []) or str(sig))
+
+    raw = res.get("score", 0)
+    score = clip(round(raw / 16.0, 3))  # ~+16 (Strong Buy) -> +1
+    return {
+        "ticker": ticker.upper(),
+        "signal": "dividends",
+        "score": score,
+        "rating": score_to_rating(score),
+        "details": {
+            "raw_score": raw,
+            "signal": sig,
+            "payout_ratio": res.get("payout_ratio"),
+            "market_cap": res.get("market_cap"),
+        },
+    }
+
+
 ADAPTERS: dict[str, dict] = {
     "aarav": {
         "name": "macd",
         "owner": "aarav",
         "category": "Technicals",
         "analyze": _aarav,
+    },
+    "anshu": {
+        "name": "dividends",
+        "owner": "anshu",
+        "category": "Fundamentals",
+        "analyze": _anshu,
     },
 }

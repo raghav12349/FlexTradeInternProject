@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.adapters import ADAPTERS
 from core.rating import score_to_rating
-from core.registry import load_modules, module_meta
+from core.registry import load_signals
 
 
 def analyze_ticker(ticker: str, period: str = "2y") -> dict:
@@ -24,20 +23,22 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
           "composite_rating": "Hold",
         }
     """
-    modules = load_modules()
     signals: dict[str, dict] = {}
 
-    for mod in modules:
-        meta = module_meta(mod)
-        name, owner = meta["name"], meta["owner"]
-        adapter = ADAPTERS.get(meta["module"])
-        # Pluggable per-person code — isolate failures so one bad module
-        # doesn't take down the whole run.
+    for entry in load_signals():
+        name, owner = entry["name"], entry["owner"]
+        # A module that failed to import (e.g. missing dependency) shows an
+        # error in its column instead of crashing the whole run.
+        if entry["error"] is not None:
+            signals[name] = {"owner": owner, "score": None,
+                             "rating": f"ERR:{entry['error'].__class__.__name__}"}
+            continue
+        # Pluggable per-person code — isolate failures too.
         try:
-            if adapter:
-                result = adapter["analyze"](mod, ticker, period)
+            if entry["adapter"]:
+                result = entry["adapter"]["analyze"](entry["module"], ticker, period)
             else:
-                result = mod.analyze(ticker, period=period)
+                result = entry["module"].analyze(ticker, period=period)
             signals[name] = {
                 "owner": owner,
                 "score": result.get("score"),

@@ -1,6 +1,6 @@
 """Registry of per-person analysis modules.
 
-Each module under `modules/` must expose:
+Each module under `modules/` should expose:
 
     SIGNAL_NAME: str      column label in the output table
     SIGNAL_OWNER: str     person responsible for the signal
@@ -14,40 +14,59 @@ Each module under `modules/` must expose:
             "details": dict,           # arbitrary per-signal breakdown
         }
 
-If a module hasn't been built yet, `analyze` may raise NotImplementedError
-and the runner will simply leave its column blank.
+Modules that don't follow this shape are bridged via core/adapters.py.
+Import errors (e.g. a teammate's uninstalled dependency) are captured per
+module so one broken file can't take down the whole run.
 """
 from __future__ import annotations
 
 import importlib
-from types import ModuleType
 
 OWNERS = ["samar", "aarav", "justin", "anshu", "cosmo", "diya", "kavin"]
 
 
-def load_modules() -> list[ModuleType]:
-    return [importlib.import_module(f"modules.{owner}") for owner in OWNERS]
+def load_signals() -> list[dict]:
+    """One entry per owner with metadata and how to run it.
 
-
-def module_meta(mod) -> dict:
-    """Signal metadata for a module, preferring an adapter entry if one exists.
-
-    Adapter-wrapped modules (e.g. aarav) don't define SIGNAL_* constants, so we
-    fall back to the adapter's declared name/owner/category.
+    Each entry: {
+        "module_name": str,
+        "name": str, "owner": str, "category": str,
+        "module": ModuleType | None,
+        "adapter": dict | None,        # from ADAPTERS if the module is wrapped
+        "error": Exception | None,     # import failure, if any
+    }
     """
     from core.adapters import ADAPTERS
 
-    short = mod.__name__.split(".")[-1]
-    ad = ADAPTERS.get(short)
-    if ad:
-        return {"module": short, "name": ad["name"], "owner": ad["owner"],
-                "category": ad["category"]}
-    return {
-        "module": short,
-        "name": getattr(mod, "SIGNAL_NAME", short),
-        "owner": getattr(mod, "SIGNAL_OWNER", "?"),
-        "category": getattr(mod, "SIGNAL_CATEGORY", "Other"),
-    }
+    entries = []
+    for owner in OWNERS:
+        module = None
+        error = None
+        try:
+            module = importlib.import_module(f"modules.{owner}")
+        except Exception as exc:  # noqa: BLE001 - capture, don't crash the run
+            error = exc
+
+        adapter = ADAPTERS.get(owner)
+        if adapter:
+            name, owner_name, category = adapter["name"], adapter["owner"], adapter["category"]
+        elif module is not None:
+            name = getattr(module, "SIGNAL_NAME", owner)
+            owner_name = getattr(module, "SIGNAL_OWNER", owner)
+            category = getattr(module, "SIGNAL_CATEGORY", "Other")
+        else:
+            name, owner_name, category = owner, owner, "Other"
+
+        entries.append({
+            "module_name": owner,
+            "name": name,
+            "owner": owner_name,
+            "category": category,
+            "module": module,
+            "adapter": adapter,
+            "error": error,
+        })
+    return entries
 
 
 def signal_specs() -> list[dict]:
@@ -56,4 +75,8 @@ def signal_specs() -> list[dict]:
     Returns a list of {"module", "name", "owner", "category"} so a UI can
     build its columns/panels up front.
     """
-    return [module_meta(mod) for mod in load_modules()]
+    return [
+        {"module": e["module_name"], "name": e["name"],
+         "owner": e["owner"], "category": e["category"]}
+        for e in load_signals()
+    ]

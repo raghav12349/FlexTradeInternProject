@@ -1,3 +1,4 @@
 requests>=2.31
 pandas>=2.0
 numpy>=1.24
+polygon-api-client>=1.14   # used by anshu.py (from polygon import RESTClient)
