@@ -91,27 +91,38 @@ class Dashboard(tk.Tk):
             panel = ttk.LabelFrame(container, text=cat, padding=6)
             panel.pack(side="left", fill="both", expand=True, padx=5, pady=8)
             tree = ttk.Treeview(panel, columns=("owner", "score", "rating"),
-                                show="tree headings", height=6)
+                                show="tree headings", height=5)
             tree.heading("#0", text="Signal")
             tree.heading("owner", text="Owner")
             tree.heading("score", text="Score")
-            tree.heading("rating", text="Rating")
-            tree.column("#0", width=170)
-            tree.column("owner", width=70, anchor="center")
-            tree.column("score", width=70, anchor="center")
-            tree.column("rating", width=100, anchor="center")
+            tree.heading("rating", text="Their Rating")
+            tree.column("#0", width=150)
+            tree.column("owner", width=64, anchor="center")
+            tree.column("score", width=60, anchor="center")
+            tree.column("rating", width=120, anchor="center")
             tree.pack(fill="both", expand=True)
+            tree.bind("<<TreeviewSelect>>", self._on_signal_select)
             for s in self.specs:
                 if s["category"] == cat:
                     tree.insert("", "end", iid=s["name"], text=s["name"],
                                 values=(s["owner"], "—", "—"))
             self.category_trees[cat] = tree
 
+        # breakdown pane — how each rating was computed (their own logic)
+        bd = ttk.LabelFrame(parent, text="How each rating was computed (click a signal to focus)", padding=6)
+        bd.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        self.breakdown = tk.Text(bd, height=10, wrap="word", state="disabled",
+                                 font=("Menlo", 11))
+        bdbar = ttk.Scrollbar(bd, orient="vertical", command=self.breakdown.yview)
+        self.breakdown.configure(yscrollcommand=bdbar.set)
+        bdbar.pack(side="right", fill="y")
+        self.breakdown.pack(side="left", fill="both", expand=True)
+
         # accumulating table
         tbl = ttk.LabelFrame(parent, text="Tickers", padding=6)
         tbl.pack(fill="both", expand=True, padx=12, pady=8)
         cols = ["Ticker", *self.signal_names, "Composite"]
-        self.table = ttk.Treeview(tbl, columns=cols, show="headings", height=7)
+        self.table = ttk.Treeview(tbl, columns=cols, show="headings", height=6)
         for c in cols:
             self.table.heading(c, text=c)
             self.table.column(c, width=120, anchor="center")
@@ -135,6 +146,7 @@ class Dashboard(tk.Tk):
         if not ticker:
             return
         report = analyze_ticker(ticker, period=self.period_var.get())
+        self.last_report = report
 
         for cat, tree in self.category_trees.items():
             for s in self.specs:
@@ -142,11 +154,12 @@ class Dashboard(tk.Tk):
                     continue
                 sig = report["signals"].get(s["name"], {})
                 tree.item(s["name"], values=(s["owner"], _fmt(sig.get("score")),
-                                             sig.get("rating", "—")))
+                                             sig.get("native_rating", "—")))
 
         self.composite_var.set(
             f"Composite: {_fmt(report['composite'])}  ({report['composite_rating']})"
         )
+        self._render_breakdown()  # all signals
 
         store: dict = {}
         values = [ticker]
@@ -163,6 +176,27 @@ class Dashboard(tk.Tk):
             self.table.insert("", "end", iid=ticker, values=values)
         self.rows[ticker] = store
         self.status_var.set(f"Analyzed {ticker} ({len(self.rows)} in table).")
+
+    def _on_signal_select(self, event) -> None:
+        sel = event.widget.selection()
+        if sel:
+            self._render_breakdown(only=sel[0])
+
+    def _render_breakdown(self, only: str | None = None) -> None:
+        """Fill the breakdown pane with each signal's native rating + reasoning.
+        If `only` is a signal name, show just that one."""
+        report = getattr(self, "last_report", None)
+        self.breakdown.configure(state="normal")
+        self.breakdown.delete("1.0", "end")
+        if report:
+            self.breakdown.insert("end", f"{report['ticker']}\n")
+            for name, sig in report["signals"].items():
+                if only and name != only:
+                    continue
+                self.breakdown.insert("end", f"\n[{sig['owner']} · {name}] → {sig['native_rating']}\n")
+                for line in sig.get("breakdown", []):
+                    self.breakdown.insert("end", f"   • {line}\n")
+        self.breakdown.configure(state="disabled")
 
     def on_export(self) -> None:
         if not self.rows:

@@ -25,18 +25,24 @@ from core.universe import resolve
 
 
 def print_report(report: dict) -> None:
-    """Pretty-print one ticker's per-signal breakdown and composite."""
+    """Pretty-print one ticker's per-signal ratings, then how each was computed."""
     print(f"\n=== {report['ticker']} ===")
-    print(f"{'signal':<20}{'owner':<10}{'score':>8}  rating")
-    print("-" * 52)
+    print(f"{'signal':<18}{'owner':<9}{'score':>8}   rating (their scale)")
+    print("-" * 60)
     for name, sig in report["signals"].items():
         score = sig["score"]
         score_str = f"{score:+.3f}" if isinstance(score, (int, float)) else "   --"
-        print(f"{name:<20}{sig['owner']:<10}{score_str:>8}  {sig['rating']}")
-    print("-" * 52)
+        print(f"{name:<18}{sig['owner']:<9}{score_str:>8}   {sig['native_rating']}")
+    print("-" * 60)
     comp = report["composite"]
     comp_str = f"{comp:+.3f}" if isinstance(comp, (int, float)) else "   --"
-    print(f"{'COMPOSITE':<30}{comp_str:>8}  {report['composite_rating']}")
+    print(f"{'COMPOSITE':<27}{comp_str:>8}   {report['composite_rating']}  (blended, our scale)")
+
+    print("\n── How each rating was computed ──")
+    for name, sig in report["signals"].items():
+        print(f"\n[{sig['owner']} · {name}] → {sig['native_rating']}")
+        for line in sig["breakdown"]:
+            print(f"   • {line}")
 
 
 def interactive(period: str) -> None:

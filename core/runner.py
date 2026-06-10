@@ -9,6 +9,18 @@ from core.rating import score_to_rating
 from core.registry import load_signals
 
 
+def _breakdown(result: dict) -> list[str]:
+    """The reasoning lines for a signal: prefer the module's own breakdown,
+    else fall back to its details, so every signal has something to show."""
+    bd = result.get("breakdown")
+    if bd:
+        return list(bd)
+    det = result.get("details") or {}
+    if "note" in det:
+        return [str(det["note"])]
+    return [f"{k}: {v}" for k, v in det.items()] or ["(no breakdown provided)"]
+
+
 def analyze_ticker(ticker: str, period: str = "2y") -> dict:
     """Run all modules for one ticker.
 
@@ -16,12 +28,18 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
         {
           "ticker": "AAPL",
           "signals": {
-              "momentum_3_6_12": {"owner": "samar", "score": 0.42, "rating": "Buy"},
-              ...
+              "momentum_3_6_12": {
+                  "owner": "samar", "score": 0.42, "rating": "Buy",
+                  "native_rating": "Buy", "breakdown": [...]
+              }, ...
           },
           "composite": 0.08,            # equal-weight mean of available scores
           "composite_rating": "Hold",
         }
+
+    `rating` is our normalized label (drives nothing user-facing); `native_rating`
+    is the module's OWN label and is what the UI shows. `breakdown` explains how
+    that rating was computed, in the module's own logic.
     """
     signals: dict[str, dict] = {}
 
@@ -30,8 +48,9 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
         # A module that failed to import (e.g. missing dependency) shows an
         # error in its column instead of crashing the whole run.
         if entry["error"] is not None:
-            signals[name] = {"owner": owner, "score": None,
-                             "rating": f"ERR:{entry['error'].__class__.__name__}"}
+            err = f"ERR:{entry['error'].__class__.__name__}"
+            signals[name] = {"owner": owner, "score": None, "rating": err,
+                             "native_rating": err, "breakdown": [str(entry["error"])]}
             continue
         # Pluggable per-person code — isolate failures too.
         try:
@@ -43,11 +62,16 @@ def analyze_ticker(ticker: str, period: str = "2y") -> dict:
                 "owner": owner,
                 "score": result.get("score"),
                 "rating": result.get("rating"),
+                "native_rating": result.get("native_rating") or result.get("rating"),
+                "breakdown": _breakdown(result),
             }
         except NotImplementedError:
-            signals[name] = {"owner": owner, "score": None, "rating": "N/A"}
+            signals[name] = {"owner": owner, "score": None, "rating": "N/A",
+                             "native_rating": "N/A", "breakdown": ["not implemented yet"]}
         except Exception as exc:  # noqa: BLE001
-            signals[name] = {"owner": owner, "score": None, "rating": f"ERR:{exc.__class__.__name__}"}
+            err = f"ERR:{exc.__class__.__name__}"
+            signals[name] = {"owner": owner, "score": None, "rating": err,
+                             "native_rating": err, "breakdown": [str(exc)]}
 
     # Composite: simple equal-weight mean of whatever scored. Swap this for a
     # weighted / rank-based scheme once everyone's signal is finalised.
