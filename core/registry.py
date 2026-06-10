@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import importlib
 
-OWNERS = ["samar", "aarav", "aarav2", "justin", "anshu", "anshu2", "cosmo", "diya", "kavin"]
+OWNERS = ["samar", "aarav", "aarav2", "aarav3", "aarav4", "justin",
+          "anshu", "anshu2", "cosmo", "diya", "kavin"]
 
 
 def load_signals() -> list[dict]:

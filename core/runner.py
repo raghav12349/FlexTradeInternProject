@@ -1,4 +1,10 @@
-"""Run every registered module across tickers and assemble the results."""
+"""Run every registered module across tickers and assemble the results.
+
+Everything user-facing is on a common 1-10 scale (`ten`). Numeric signals carry
+a `ten`; qualitative ones (e.g. cosmo's BULLISH/BEARISH) carry ten=None and are
+shown as labels. The composite is the mean of the available numeric `ten`s —
+the same scale the individual signals use — not an opaque normalized decimal.
+"""
 from __future__ import annotations
 
 import contextlib
@@ -7,13 +13,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.rating import score_to_rating
 from core.registry import load_signals
+from core.scoring import fmt_ten, ten_to_label, to_ten
 
 
 def _breakdown(result: dict) -> list[str]:
-    """The reasoning lines for a signal: prefer the module's own breakdown,
-    else fall back to its details, so every signal has something to show."""
     bd = result.get("breakdown")
     if bd:
         return list(bd)
@@ -23,94 +27,75 @@ def _breakdown(result: dict) -> list[str]:
     return [f"{k}: {v}" for k, v in det.items()] or ["(no breakdown provided)"]
 
 
+def _err_signal(owner: str, exc) -> dict:
+    err = f"ERR:{exc.__class__.__name__}"
+    return {"owner": owner, "ten": None, "native_score": "—",
+            "native_rating": err, "breakdown": [str(exc)]}
+
+
 def analyze_ticker(ticker: str, period: str = "2y") -> dict:
-    """Run all modules for one ticker.
-
-    Returns:
-        {
-          "ticker": "AAPL",
-          "signals": {
-              "momentum_3_6_12": {
-                  "owner": "samar", "score": 0.42, "rating": "Buy",
-                  "native_rating": "Buy", "breakdown": [...]
-              }, ...
-          },
-          "composite": 0.08,            # equal-weight mean of available scores
-          "composite_rating": "Hold",
-        }
-
-    `rating` is our normalized label (drives nothing user-facing); `native_rating`
-    is the module's OWN label and is what the UI shows. `breakdown` explains how
-    that rating was computed, in the module's own logic.
-    """
+    """Run all modules for one ticker. Each signal carries `ten` (1-10 or None),
+    `native_score` (display), `native_rating` (author's own label), `breakdown`.
+    The composite is the mean of the numeric `ten`s on the same 1-10 scale."""
     signals: dict[str, dict] = {}
 
     for entry in load_signals():
         name, owner = entry["name"], entry["owner"]
-        # A module that failed to import (e.g. missing dependency) shows an
-        # error in its column instead of crashing the whole run.
         if entry["error"] is not None:
-            err = f"ERR:{entry['error'].__class__.__name__}"
-            signals[name] = {"owner": owner, "score": None, "rating": err,
-                             "native_score": "—", "native_rating": err,
-                             "breakdown": [str(entry["error"])]}
+            signals[name] = _err_signal(owner, entry["error"])
             continue
-        # Pluggable per-person code — isolate failures too.
         try:
-            # Silence modules that print progress to stdout, so the table stays clean.
             with contextlib.redirect_stdout(io.StringIO()):
                 if entry["adapter"]:
                     result = entry["adapter"]["analyze"](entry["module"], ticker, period)
                 else:
                     result = entry["module"].analyze(ticker, period=period)
-            score = result.get("score")
-            # native_score is the module's own scale (e.g. "5/10", "11", "0.84");
-            # placeholders that have no other scale fall back to the normalized number.
-            native_score = result.get("native_score")
-            if native_score is None:
-                native_score = f"{score:+.3f}" if isinstance(score, (int, float)) else "—"
+
+            # Adapters already provide `ten`. Contract modules (placeholders)
+            # return a [-1, 1] `score`; convert it onto the 1-10 scale.
+            if "ten" in result:
+                ten = result["ten"]
+            else:
+                ten = to_ten(result.get("score"), -1.0, 1.0)
+            native_score = result.get("native_score") or fmt_ten(ten)
+            native_rating = result.get("native_rating") or ten_to_label(ten)
             signals[name] = {
                 "owner": owner,
-                "score": score,
-                "rating": result.get("rating"),
+                "ten": ten,
                 "native_score": native_score,
-                "native_rating": result.get("native_rating") or result.get("rating"),
+                "native_rating": native_rating,
                 "breakdown": _breakdown(result),
             }
         except NotImplementedError:
-            signals[name] = {"owner": owner, "score": None, "rating": "N/A",
-                             "native_score": "—", "native_rating": "N/A",
-                             "breakdown": ["not implemented yet"]}
-        # Some modules call sys.exit() on API errors (raises SystemExit, which is
-        # NOT an Exception) — catch it too so one module can't kill the whole run.
+            signals[name] = {"owner": owner, "ten": None, "native_score": "—",
+                             "native_rating": "N/A", "breakdown": ["not implemented yet"]}
+        # Some modules call sys.exit() on API errors (SystemExit is not an
+        # Exception) — catch it too so one module can't kill the whole run.
         except (Exception, SystemExit) as exc:  # noqa: BLE001
-            err = f"ERR:{exc.__class__.__name__}"
-            signals[name] = {"owner": owner, "score": None, "rating": err,
-                             "native_score": "—", "native_rating": err,
-                             "breakdown": [str(exc)]}
+            signals[name] = _err_signal(owner, exc)
 
-    # Composite: simple equal-weight mean of whatever scored. Swap this for a
-    # weighted / rank-based scheme once everyone's signal is finalised.
-    scores = [s["score"] for s in signals.values() if isinstance(s["score"], (int, float))]
-    composite = round(sum(scores) / len(scores), 3) if scores else None
+    tens = [s["ten"] for s in signals.values() if isinstance(s["ten"], (int, float))]
+    composite = round(sum(tens) / len(tens), 1) if tens else None
 
     return {
         "ticker": ticker.upper(),
         "signals": signals,
-        "composite": composite,
-        "composite_rating": score_to_rating(composite) if composite is not None else "N/A",
+        "composite": composite,                 # 1-10 (or None)
+        "composite_label": ten_to_label(composite),
+        "n_scored": len(tens),
     }
 
 
 def run(tickers: list[str], period: str = "2y") -> pd.DataFrame:
-    """Wide table: ticker index, one column per signal score, plus composite."""
+    """Wide table: ticker index, one column per signal (1-10), plus composite."""
     rows = []
     for ticker in tickers:
         report = analyze_ticker(ticker, period=period)
         row: dict = {"ticker": report["ticker"]}
         for name, sig in report["signals"].items():
-            row[name] = sig["score"]
-        row["composite"] = report["composite"]
+            row[name] = sig["ten"]
+        row["composite_1_10"] = report["composite"]
+        row["rating"] = report["composite_label"]
         rows.append(row)
     return pd.DataFrame(rows).set_index("ticker")
 

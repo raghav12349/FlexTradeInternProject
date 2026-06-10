@@ -34,8 +34,8 @@ def print_report(report: dict) -> None:
         print(f"{name:<18}{sig['owner']:<9}{sig['native_score']:>12}   {sig['native_rating']}")
     print("-" * 62)
     comp = report["composite"]
-    comp_str = f"{comp:+.3f}" if isinstance(comp, (int, float)) else "   --"
-    print(f"{'COMPOSITE (blended -1..+1)':<29}{comp_str:>10}   {report['composite_rating']}")
+    comp_str = f"{comp:.1f}/10" if isinstance(comp, (int, float)) else "—"
+    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<27}{comp_str:>12}   {report['composite_label']}")
 
     print("\n── How each rating was computed ──")
     for name, sig in report["signals"].items():
