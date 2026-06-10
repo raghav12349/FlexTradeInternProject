@@ -145,7 +145,11 @@ def _samar_universe(mod: ModuleType):
         snap = mod.get_market_snapshots()
         universe = list(mod.DIVERSE_UNIVERSE.keys())
         momentum_dict, _ = mod.compute_momentum(universe, snap)
-        cap_tiers = mod.build_cap_tiers()
+        # Skip build_cap_tiers(): it scrapes constituents for S&P 500/400/600 +
+        # Nasdaq-100 (~1600 tickers) and is by far the slowest step. The
+        # cap-relative z it feeds is only a secondary tiebreaker — the 1-10
+        # score and recommendation come from the diverse-universe z-scores.
+        cap_tiers: dict = {}
         results, stats = mod.standardize(momentum_dict, mod.DIVERSE_UNIVERSE, cap_tiers)
         _SAMAR_UNIVERSE["data"] = (snap, momentum_dict, results, stats, cap_tiers)
     return _SAMAR_UNIVERSE["data"]
@@ -241,6 +245,12 @@ def _anshu2(mod: ModuleType, ticker: str, period: str) -> dict:
 
 # ───────────────────────── diya: liquidity (0..1) ───────────────────────────
 def _diya(mod: ModuleType, ticker: str, period: str) -> dict:
+    # diya hardcodes a placeholder MASSIVE_API_KEY ("YOUR_API_KEY_HERE") and
+    # never reads the env; inject the real key into its module globals.
+    key = os.environ.get("MASSIVE_API_KEY")
+    if key:
+        mod.MASSIVE_API_KEY = key
+        mod.HEADERS = {"Authorization": f"Bearer {key}"}
     end = date.today()
     start = end - timedelta(days=max(period_to_days(period), 1095))
     res = mod.liquidity_analysis(ticker, start.isoformat(), end.isoformat(), save_detail=False)

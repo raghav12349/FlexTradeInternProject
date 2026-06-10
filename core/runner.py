@@ -1,20 +1,30 @@
 """Run every registered module across tickers and assemble the results.
 
-Everything user-facing is on a common 1-10 scale (`ten`). Numeric signals carry
-a `ten`; qualitative ones (e.g. cosmo's BULLISH/BEARISH) carry ten=None and are
-shown as labels. The composite is the mean of the available numeric `ten`s —
-the same scale the individual signals use — not an opaque normalized decimal.
+Signals run concurrently (they're I/O-bound API calls), so a full analysis takes
+about as long as the single slowest signal rather than the sum. Results are
+cached per (ticker, period). Everything user-facing is on a 1-10 scale (`ten`);
+qualitative signals (cosmo) carry ten=None and show as labels. The composite is
+the mean of the available numeric `ten`s.
 """
 from __future__ import annotations
 
 import contextlib
 import io
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
 import pandas as pd
 
 from core.registry import load_signals
 from core.scoring import fmt_ten, ten_to_label, to_ten
+
+_SIGNAL_TIMEOUT = 45      # seconds per signal before it's marked timed-out
+_CACHE: dict[tuple, dict] = {}
+
+
+def clear_cache() -> None:
+    _CACHE.clear()
 
 
 def _breakdown(result: dict) -> list[str]:
@@ -27,63 +37,67 @@ def _breakdown(result: dict) -> list[str]:
     return [f"{k}: {v}" for k, v in det.items()] or ["(no breakdown provided)"]
 
 
-def _err_signal(owner: str, exc) -> dict:
-    err = f"ERR:{exc.__class__.__name__}"
+def _err_signal(owner: str, label: str, msg: str) -> dict:
     return {"owner": owner, "ten": None, "native_score": "—",
-            "native_rating": err, "breakdown": [str(exc)]}
+            "native_rating": label, "breakdown": [msg]}
 
 
-def analyze_ticker(ticker: str, period: str = "2y") -> dict:
-    """Run all modules for one ticker. Each signal carries `ten` (1-10 or None),
-    `native_score` (display), `native_rating` (author's own label), `breakdown`.
-    The composite is the mean of the numeric `ten`s on the same 1-10 scale."""
+def _run_one(entry: dict, ticker: str, period: str) -> dict:
+    """Run a single signal and normalize it to the common shape."""
+    owner = entry["owner"]
+    if entry["error"] is not None:
+        return _err_signal(owner, f"ERR:{entry['error'].__class__.__name__}", str(entry["error"]))
+    try:
+        if entry["adapter"]:
+            result = entry["adapter"]["analyze"](entry["module"], ticker, period)
+        else:
+            result = entry["module"].analyze(ticker, period=period)
+        ten = result["ten"] if "ten" in result else to_ten(result.get("score"), -1.0, 1.0)
+        return {
+            "owner": owner,
+            "ten": ten,
+            "native_score": result.get("native_score") or fmt_ten(ten),
+            "native_rating": result.get("native_rating") or ten_to_label(ten),
+            "breakdown": _breakdown(result),
+        }
+    except NotImplementedError:
+        return _err_signal(owner, "N/A", "not implemented yet")
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - incl. modules that sys.exit()
+        return _err_signal(owner, f"ERR:{exc.__class__.__name__}", str(exc))
+
+
+def analyze_ticker(ticker: str, period: str = "2y", use_cache: bool = True) -> dict:
+    """Run all signals for one ticker (concurrently). Cached per (ticker, period)."""
+    cache_key = (ticker.upper(), period)
+    if use_cache and cache_key in _CACHE:
+        return _CACHE[cache_key]
+
+    entries = load_signals()
     signals: dict[str, dict] = {}
 
-    for entry in load_signals():
-        name, owner = entry["name"], entry["owner"]
-        if entry["error"] is not None:
-            signals[name] = _err_signal(owner, entry["error"])
-            continue
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                if entry["adapter"]:
-                    result = entry["adapter"]["analyze"](entry["module"], ticker, period)
-                else:
-                    result = entry["module"].analyze(ticker, period=period)
-
-            # Adapters already provide `ten`. Contract modules (placeholders)
-            # return a [-1, 1] `score`; convert it onto the 1-10 scale.
-            if "ten" in result:
-                ten = result["ten"]
-            else:
-                ten = to_ten(result.get("score"), -1.0, 1.0)
-            native_score = result.get("native_score") or fmt_ten(ten)
-            native_rating = result.get("native_rating") or ten_to_label(ten)
-            signals[name] = {
-                "owner": owner,
-                "ten": ten,
-                "native_score": native_score,
-                "native_rating": native_rating,
-                "breakdown": _breakdown(result),
-            }
-        except NotImplementedError:
-            signals[name] = {"owner": owner, "ten": None, "native_score": "—",
-                             "native_rating": "N/A", "breakdown": ["not implemented yet"]}
-        # Some modules call sys.exit() on API errors (SystemExit is not an
-        # Exception) — catch it too so one module can't kill the whole run.
-        except (Exception, SystemExit) as exc:  # noqa: BLE001
-            signals[name] = _err_signal(owner, exc)
+    # Suppress module stdout and run signals in parallel. redirect_stdout is
+    # global, so it wraps the whole concurrent section.
+    with contextlib.redirect_stdout(io.StringIO()):
+        ex = ThreadPoolExecutor(max_workers=min(10, len(entries)))
+        futures = {e["name"]: ex.submit(_run_one, e, ticker, period) for e in entries}
+        for e in entries:
+            try:
+                signals[e["name"]] = futures[e["name"]].result(timeout=_SIGNAL_TIMEOUT)
+            except FutureTimeout:
+                signals[e["name"]] = _err_signal(e["owner"], "timeout", "signal timed out")
+        ex.shutdown(wait=False, cancel_futures=True)
 
     tens = [s["ten"] for s in signals.values() if isinstance(s["ten"], (int, float))]
     composite = round(sum(tens) / len(tens), 1) if tens else None
-
-    return {
+    report = {
         "ticker": ticker.upper(),
         "signals": signals,
-        "composite": composite,                 # 1-10 (or None)
+        "composite": composite,
         "composite_label": ten_to_label(composite),
         "n_scored": len(tens),
     }
+    _CACHE[cache_key] = report
+    return report
 
 
 def run(tickers: list[str], period: str = "2y") -> pd.DataFrame:
