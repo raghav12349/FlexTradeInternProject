@@ -24,3 +24,17 @@ def load_local_keys() -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip())
+
+
+def get_key(name: str) -> str:
+    """Return an API key, loading .keys.env first. Raises if it's not set.
+
+    Convenience for modules that want a single call (e.g. kavin):
+        from core.env import get_key
+        key = get_key("MASSIVE_API_KEY")
+    """
+    load_local_keys()
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is not set (export it or add it to .keys.env)")
+    return value
