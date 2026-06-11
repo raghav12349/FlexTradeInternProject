@@ -59,7 +59,9 @@ def get_news(ticker: str, limit: int = 15) -> list[dict]:
         out.append({
             "title": a.get("title", ""),
             "publisher": (a.get("publisher") or {}).get("name", ""),
+            "author": a.get("author", ""),
             "published": (a.get("published_utc") or "")[:10],
+            "description": a.get("description", ""),
             "sentiment": sentiment,
             "reasoning": reasoning,
             "url": a.get("article_url", ""),

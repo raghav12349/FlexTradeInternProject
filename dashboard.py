@@ -14,6 +14,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
@@ -140,6 +141,12 @@ class Dashboard(tk.Tk):
         sub.add(signals_tab, text="Signals")
         sub.add(news_tab, text="News")
 
+        news_bar = ttk.Frame(news_tab, padding=(0, 2))
+        news_bar.pack(fill="x")
+        ttk.Button(news_bar, text="Open News Window ↗",
+                   command=self.open_news_window).pack(side="left")
+        ttk.Label(news_bar, text="  (descriptions + clickable article links)",
+                  foreground="#777").pack(side="left")
         self.news_text = tk.Text(news_tab, wrap="word", state="disabled", height=12)
         nsb = ttk.Scrollbar(news_tab, orient="vertical", command=self.news_text.yview)
         self.news_text.configure(yscrollcommand=nsb.set)
@@ -361,6 +368,8 @@ class Dashboard(tk.Tk):
         self._set_text(self.summary, summarize(report, info_dict, chg))
 
     def _show_news(self, news: list) -> None:
+        self._last_news = news
+        self._last_news_ticker = self.last_report["ticker"] if self.last_report else ""
         self.news_text.configure(state="normal")
         self.news_text.delete("1.0", "end")
         if not news:
@@ -376,6 +385,60 @@ class Dashboard(tk.Tk):
                     self.news_text.insert("end", f"   {n['reasoning']}\n", ("meta",))
                 self.news_text.insert("end", "\n")
         self.news_text.configure(state="disabled")
+
+    def open_news_window(self) -> None:
+        """Open a separate, richer news window: sentiment, description, link."""
+        news = getattr(self, "_last_news", None)
+        if not news:
+            messagebox.showinfo("News", "Analyze a ticker first.")
+            return
+        ticker = getattr(self, "_last_news_ticker", "")
+        win = tk.Toplevel(self)
+        win.title(f"FlexTrade News — {ticker}")
+        win.geometry("760x720")
+
+        txt = tk.Text(win, wrap="word", state="disabled", padx=12, pady=10,
+                      font=("Helvetica", 11), cursor="arrow")
+        bar = ttk.Scrollbar(win, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+
+        txt.tag_configure("h", font=("Helvetica", 13, "bold"))
+        txt.tag_configure("positive", foreground="#2e9e3f", font=("Helvetica", 11, "bold"))
+        txt.tag_configure("negative", foreground="#c0392b", font=("Helvetica", 11, "bold"))
+        txt.tag_configure("neutral", foreground="#777", font=("Helvetica", 11, "bold"))
+        txt.tag_configure("meta", foreground="#888", font=("Helvetica", 10))
+        txt.tag_configure("desc", foreground="#222")
+        txt.tag_configure("reason", foreground="#555", font=("Helvetica", 10, "italic"))
+        txt.tag_configure("link", foreground="#1a5fb4", underline=True)
+
+        txt.configure(state="normal")
+        txt.insert("end", f"Recent news for {ticker}\n\n", ("h",))
+        for i, n in enumerate(news):
+            sent = (n.get("sentiment") or "neutral").lower()
+            tag = sent if sent in ("positive", "negative", "neutral") else "neutral"
+            txt.insert("end", f"[{sent.upper()}]  ", (tag,))
+            txt.insert("end", f"{n.get('title', '')}\n", ("h",))
+            meta = f"{n.get('publisher', '')}"
+            if n.get("author"):
+                meta += f" · {n['author']}"
+            meta += f" · {n.get('published', '')}"
+            txt.insert("end", meta + "\n", ("meta",))
+            if n.get("description"):
+                txt.insert("end", n["description"].strip() + "\n", ("desc",))
+            if n.get("reasoning"):
+                txt.insert("end", f"Why it matters for {ticker}: {n['reasoning']}\n", ("reason",))
+            url = n.get("url")
+            if url:
+                linktag = f"link{i}"
+                txt.insert("end", "Open article ↗", ("link", linktag))
+                txt.tag_bind(linktag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
+                txt.tag_bind(linktag, "<Enter>", lambda _e: txt.configure(cursor="hand2"))
+                txt.tag_bind(linktag, "<Leave>", lambda _e: txt.configure(cursor="arrow"))
+                txt.insert("end", "\n")
+            txt.insert("end", "\n" + "─" * 70 + "\n\n", ("meta",))
+        txt.configure(state="disabled")
 
     def _on_signal_select(self, event) -> None:
         sel = event.widget.selection()
