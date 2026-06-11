@@ -20,9 +20,10 @@ import sys
 import time
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 from massive import RESTClient
+from massive.rest.models.financials import FinancialIncomeStatement
 
 API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
 RATE_LIMIT_BACKOFF = 60  # seconds to wait after a 429
@@ -285,18 +286,18 @@ _SECTOR_OVERRIDES: dict[str, str] = {
 
 def _fetch_revenue_growth(client: RESTClient, ticker: str) -> Optional[float]:
     """Return YoY annual revenue growth as a percentage, or None if unavailable."""
-    rows = list(_call_with_retry(
+    rows = cast(list[FinancialIncomeStatement], list(_call_with_retry(
         client.list_financials_income_statements,
         tickers=ticker,
         timeframe="annual",
         limit=10,
-    ))
-    rows.sort(key=lambda r: r.period_end, reverse=True)
+    )))
+    rows.sort(key=lambda r: r.period_end or "", reverse=True)
     if len(rows) < 2:
         return None
     rev_new = getattr(rows[0], "revenue", None)
     rev_old = getattr(rows[1], "revenue", None)
-    if not rev_new or not rev_old or rev_old == 0:
+    if rev_new is None or rev_old is None or rev_old == 0:
         return None
     return (rev_new - rev_old) / abs(rev_old) * 100
 
