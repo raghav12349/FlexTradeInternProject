@@ -21,13 +21,6 @@ import json
 
 import requests
 
-
-# ======================================================================
-# EDIT THIS WHEN THE API KEY CHANGES  (kept as a header so it's easy to swap)
-# ======================================================================
-MASSIVE_API_KEY = "YOUR_API_KEY_HERE"
-# ======================================================================
-
 BASE_URL = "https://api.massive.com"
 HEADERS = {"Authorization": f"Bearer {MASSIVE_API_KEY}"}
 
