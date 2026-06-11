@@ -22,9 +22,11 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
+import os
+
 from massive import RESTClient
 
-API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
+API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 RATE_LIMIT_BACKOFF = 60  # seconds to wait after a 429
 
 

@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import math
+import os
 import sys
 import warnings
 from datetime import date, timedelta
@@ -24,9 +25,7 @@ try:
 except ImportError:
     sys.exit("Missing dependency: run  pip3 install requests")
 
-# ─── HARD-CODE YOUR API KEY HERE ─────────────────────────────────────────────
-API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
-# ─────────────────────────────────────────────────────────────────────────────
+API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 
 BASE_URL = "https://api.massive.com"
 ENDPOINT = "/stocks/filings/vX/form-4"
@@ -264,8 +263,8 @@ def parse_args():
 
 
 def main():
-    if API_KEY == "YOUR_API_KEY_HERE":
-        sys.exit("Please set your API key in the API_KEY variable at the top of the script.")
+    if not API_KEY:
+        sys.exit("MASSIVE_API_KEY environment variable not set.")
 
     args      = parse_args()
     to_date   = args.to_date   or date.today().isoformat()
