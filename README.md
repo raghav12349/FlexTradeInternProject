@@ -25,7 +25,7 @@ export MASSIVE_API_KEY=your_key_here
 python app.py AAPL                 # one ticker: per-signal breakdown + composite
 python app.py AAPL NVDA TSLA       # several: comparison table -> data/ratings.csv
 python app.py --universe TECH --rank   # rank long->short -> data/rankings.csv
-python dashboard.py                # desktop app: Single Ticker + Recommender tabs
+python dashboard.py                # desktop app: charts, search-by-name, recommender
 ```
 
 ## The signal contract
@@ -54,8 +54,8 @@ editing their files** via wrappers in `core/adapters.py`. Each adapter runs the
 author's code and returns it on a common **1–10 scale** (`ten`) plus the
 author's own `native_rating` and a `breakdown`. Authors already on 1–10 pass
 through; others are converted from their native range (anshu −15..21, diya 0–1).
-Purely qualitative signals (cosmo's BULLISH/BEARISH) stay as labels, never
-forced onto the scale. The **composite** is the average of the numeric 1–10
+Insider labels (cosmo's BULLISH/BEARISH/NEUTRAL) map to fixed 1–10 anchors so
+they count in comparisons and the composite. The **composite** is the average of the numeric 1–10
 signals — the same scale the individual signals use — and the recommender ranks
 by it.
 

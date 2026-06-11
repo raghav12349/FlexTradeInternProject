@@ -3,3 +3,4 @@ pandas>=2.0
 numpy>=1.24
 polygon-api-client>=1.14   # used by anshu.py / aarav modules (from polygon import RESTClient)
 massive                    # used by justin.py (from massive import RESTClient)
+matplotlib>=3.7          # dashboard charts (single-ticker view)

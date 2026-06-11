@@ -11,7 +11,7 @@ their files (they push often); instead each adapter runs their code and returns:
 
 `ten` is the common 1-10 scale used for the composite. Authors already on 1-10
 pass it through; others are converted from their native range (see core.scoring).
-Qualitative signals (cosmo) keep ten=None and are shown as labels only.
+Insider labels (cosmo) map to fixed 1-10 anchors so they count in comparisons.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from types import ModuleType
 
 from core.massive import period_to_days
-from core.scoring import fmt_ten, ten_to_label, to_ten
+from core.scoring import fmt_ten, insider_to_ten, is_scored, ten_to_label, to_ten
 
 _AARAV_TF = {"6mo": "6M", "1y": "1Y", "2y": "2Y"}
 
@@ -258,6 +258,8 @@ def _diya(mod: ModuleType, ticker: str, period: str) -> dict:
         raise ValueError("no liquidity data (Massive Advanced tier required)")
     comp = res["composite_score"]
     ten = to_ten(comp, 0, 1)
+    if not is_scored(ten):
+        raise ValueError("no liquidity data (Massive Advanced tier required)")
     op, fin = res.get("operational_score"), res.get("financial_score")
     lines = [
         f"Native composite {comp:.2f} on 0..1  ->  {ten}/10  (signal {res.get('signal')})",
@@ -282,7 +284,7 @@ def _converted(signal: str, ten: float | None, native_rating: str | None,
     }
 
 
-# ───────────────────────── cosmo: insider (qualitative) ─────────────────────
+# ───────────────────────── cosmo: insider sentiment ─────────────────────────
 def _cosmo(mod: ModuleType, ticker: str, period: str) -> dict:
     key = os.environ.get("MASSIVE_API_KEY")
     if key:
@@ -292,12 +294,17 @@ def _cosmo(mod: ModuleType, ticker: str, period: str) -> dict:
     txns = mod.fetch_transactions(ticker, start.isoformat(), end.isoformat(), 200)
     res = mod.compute_signal(txns, ticker)
     sig = res.get("signal", "NEUTRAL")
+    ten = insider_to_ten(sig)
+    lines = [
+        f"Insider signal {sig}  ->  {fmt_ten(ten)} for composite",
+        res.get("reason", ""),
+    ]
     return {
         "signal": "insider",
-        "ten": None,                       # qualitative — no number on the scale
-        "native_score": "—",
+        "ten": ten,
+        "native_score": f"{fmt_ten(ten)} ({sig})",
         "native_rating": sig,
-        "breakdown": [res.get("reason", "")],
+        "breakdown": lines,
         "details": {"signal": sig, "reason": res.get("reason")},
     }
 

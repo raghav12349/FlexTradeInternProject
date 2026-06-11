@@ -6,16 +6,10 @@ rank highest-to-lowest. Top/bottom buckets get Long / Short labels.
 """
 from __future__ import annotations
 
-import math
-
 import pandas as pd
 
 from core.runner import analyze_ticker
-from core.scoring import ten_to_label
-
-
-def _is_num(x) -> bool:
-    return isinstance(x, (int, float)) and not (isinstance(x, float) and math.isnan(x))
+from core.scoring import is_scored, ten_to_label
 
 
 def _labels(values: list, long_frac: float, short_frac: float) -> list[str]:
@@ -26,7 +20,7 @@ def _labels(values: list, long_frac: float, short_frac: float) -> list[str]:
     n_short = max(1, round(n * short_frac))
     out = []
     for i, v in enumerate(values):
-        if not _is_num(v):
+        if not is_scored(v):
             out.append("N/A")
         elif i < n_long:
             out.append("Long")
@@ -58,6 +52,6 @@ def rank(tickers: list[str], period: str = "2y",
         return df
     df = df.set_index("ticker").sort_values("composite_1_10", ascending=False, na_position="last")
     df.insert(0, "rank", range(1, len(df) + 1))
-    df["rating"] = [ten_to_label(v) if _is_num(v) else "N/A" for v in df["composite_1_10"]]
+    df["rating"] = [ten_to_label(v) if is_scored(v) else "N/A" for v in df["composite_1_10"]]
     df["recommendation"] = _labels(df["composite_1_10"].tolist(), long_frac, short_frac)
     return df

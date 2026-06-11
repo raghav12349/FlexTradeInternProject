@@ -22,7 +22,7 @@ from core.env import load_local_keys
 from core.recommender import rank
 from core.registry import signal_specs
 from core.runner import analyze_ticker, export_csv
-from core.scoring import fmt_ten
+from core.scoring import fmt_ten, is_scored
 from core.universe import available, resolve
 
 PERIODS = ["6mo", "1y", "2y", "5y"]
@@ -109,22 +109,50 @@ class Dashboard(tk.Tk):
         ttk.Label(top, textvariable=self.composite_var,
                   font=("Helvetica", 14, "bold")).pack(side="right")
 
+        # info row: search results + stock info + summary
         mid = ttk.Frame(parent, padding=(8, 0))
         mid.pack(fill="x")
         rb = ttk.LabelFrame(mid, text="Search results", padding=4)
         rb.pack(side="left", fill="y", padx=(0, 6))
-        self.search_list = tk.Listbox(rb, width=30, height=5)
+        self.search_list = tk.Listbox(rb, width=26, height=4)
         self.search_list.pack()
         self.search_list.bind("<Double-Button-1>", self._pick_search)
         self.search_list.bind("<Return>", self._pick_search)
 
         ib = ttk.LabelFrame(mid, text="Stock info", padding=4)
-        ib.pack(side="left", fill="both", expand=True)
-        self.info = tk.Text(ib, height=6, wrap="word", state="disabled")
+        ib.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.info = tk.Text(ib, height=5, wrap="word", state="disabled")
         self.info.pack(fill="both", expand=True)
         self._set_text(self.info, "Search a company or enter a ticker, then Analyze.")
 
-        cont = ttk.Frame(parent, padding=(8, 6))
+        sm = ttk.LabelFrame(mid, text="Summary", padding=4)
+        sm.pack(side="left", fill="both", expand=True)
+        self.summary = tk.Text(sm, height=5, wrap="word", state="disabled")
+        self.summary.pack(fill="both", expand=True)
+
+        # nested notebook: Charts | Signals
+        sub = ttk.Notebook(parent)
+        sub.pack(fill="both", expand=True, padx=8, pady=4)
+        charts_tab = ttk.Frame(sub)
+        signals_tab = ttk.Frame(sub)
+        sub.add(charts_tab, text="Charts")
+        sub.add(signals_tab, text="Signals")
+
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
+        self.fig = Figure(figsize=(9, 4.4), dpi=100, facecolor="white")
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[1.7, 1])
+        self.ax_price = self.fig.add_subplot(gs[0])
+        self.ax_sig = self.fig.add_subplot(gs[1])
+        for ax in (self.ax_price, self.ax_sig):
+            ax.text(0.5, 0.5, "analyze a ticker to see charts", ha="center",
+                    va="center", transform=ax.transAxes, color="#9aa0a6")
+            ax.set_xticks([]); ax.set_yticks([])
+        self.fig.tight_layout(pad=2.0)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=charts_tab)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        cont = ttk.Frame(signals_tab, padding=4)
         cont.pack(fill="x")
         cats: list[str] = []
         for s in self.specs:
@@ -151,9 +179,9 @@ class Dashboard(tk.Tk):
                                 values=(s["owner"], "—", "—"))
             self.category_trees[cat] = tree
 
-        bd = ttk.LabelFrame(parent, text="How each rating was computed (click a signal)", padding=4)
-        bd.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        self.breakdown = tk.Text(bd, height=9, wrap="word", state="disabled")
+        bd = ttk.LabelFrame(signals_tab, text="How each rating was computed (click a signal)", padding=4)
+        bd.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.breakdown = tk.Text(bd, height=8, wrap="word", state="disabled")
         sb = ttk.Scrollbar(bd, orient="vertical", command=self.breakdown.yview)
         self.breakdown.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -222,18 +250,21 @@ class Dashboard(tk.Tk):
         period = self.period_var.get()
 
         def work():
-            report, info = None, None
             try:
                 report = analyze_ticker(ticker, period=period)
             except Exception as exc:  # noqa: BLE001
                 self._q.put(("error", f"{ticker}: {exc.__class__.__name__}"))
                 return
+            info, bars = None, []
             try:
-                from modules.stock_info import get_info, latest_ohlc
-                info = (get_info(ticker), latest_ohlc(ticker))
+                from core.massive import period_to_days
+                from modules.stock_info import get_info, get_ohlc
+                info = get_info(ticker)
+                bars = get_ohlc(ticker, days=int(period_to_days(period) * 0.7))
             except Exception:  # noqa: BLE001
-                info = None
-            self._q.put(("analyze", ticker, report, info))
+                pass
+            latest = bars[-1] if bars else None
+            self._q.put(("analyze", ticker, report, (info, latest), bars))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -253,9 +284,10 @@ class Dashboard(tk.Tk):
             pass
         self.after(120, self._poll)
 
-    def _apply_report(self, ticker: str, report: dict, info) -> None:
+    def _apply_report(self, ticker: str, report: dict, info, bars=None) -> None:
         self.last_report = report
         self._show_info(ticker, info)
+        self._draw_charts(ticker, report, bars or [], info[0] if info else None)
         for cat, tree in self.category_trees.items():
             for s in self.specs:
                 if s["category"] != cat:
@@ -264,15 +296,15 @@ class Dashboard(tk.Tk):
                 tree.item(s["name"], values=(s["owner"], sig.get("native_score", "—"),
                                              sig.get("native_rating", "—")))
         comp = report["composite"]
-        comp_str = f"{comp:.1f}/10" if isinstance(comp, (int, float)) else "—"
+        comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
         self.composite_var.set(f"Composite: {comp_str} ({report['composite_label']})")
         self._render_breakdown()
 
         store, values = {}, [ticker]
         for name in self.signal_names:
             ten = report["signals"].get(name, {}).get("ten")
-            store[name] = ten
-            values.append(fmt_ten(ten) if isinstance(ten, (int, float)) else "—")
+            store[name] = ten if is_scored(ten) else None
+            values.append(fmt_ten(ten) if is_scored(ten) else "—")
         store["composite"] = comp
         values += [comp_str, report["composite_label"]]
         if ticker in self.rows:
@@ -296,6 +328,18 @@ class Dashboard(tk.Tk):
             f"Sector: {i['sector']}   Industry: {i['industry']}   Cap: {_cap(i['market_cap'])}\n"
             f"Latest: {ohlc}\n\n{(i['description'] or '')[:500]}",
         )
+
+    def _draw_charts(self, ticker: str, report: dict, bars: list, info_dict) -> None:
+        from core.charts import draw_price, draw_signal_bars, summarize
+        chg = draw_price(self.ax_price, bars, ticker, self.period_var.get())
+        items = [(n, s["ten"]) for n, s in report["signals"].items() if is_scored(s["ten"])]
+        draw_signal_bars(self.ax_sig, items, report["composite"])
+        try:
+            self.fig.tight_layout(pad=2.0)
+        except Exception:  # noqa: BLE001
+            pass
+        self.canvas.draw_idle()
+        self._set_text(self.summary, summarize(report, info_dict, chg))
 
     def _on_signal_select(self, event) -> None:
         sel = event.widget.selection()
@@ -411,10 +455,10 @@ class Dashboard(tk.Tk):
         for ticker, r in df.iterrows():
             rec = r["recommendation"]
             vals = [int(r["rank"]), ticker]
-            vals += [fmt_ten(r.get(n)) if isinstance(r.get(n), (int, float)) else "—"
+            vals += [fmt_ten(r.get(n)) if is_scored(r.get(n)) else "—"
                      for n in self.signal_names]
             comp = r["composite_1_10"]
-            vals += [fmt_ten(comp) if isinstance(comp, (int, float)) else "—", r["rating"], rec]
+            vals += [fmt_ten(comp) if is_scored(comp) else "—", r["rating"], rec]
             self.rec_table.insert("", "end", values=vals,
                                   tags=(rec if rec in {"Long", "Short"} else "",))
         longs = (df["recommendation"] == "Long").sum()

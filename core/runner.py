@@ -3,8 +3,8 @@
 Signals run concurrently (they're I/O-bound API calls), so a full analysis takes
 about as long as the single slowest signal rather than the sum. Results are
 cached per (ticker, period). Everything user-facing is on a 1-10 scale (`ten`);
-qualitative signals (cosmo) carry ten=None and show as labels. The composite is
-the mean of the available numeric `ten`s.
+insider labels (cosmo) map to fixed 1-10 anchors. The composite is the mean of
+the available numeric `ten`s.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.registry import load_signals
-from core.scoring import fmt_ten, ten_to_label, to_ten
+from core.scoring import fmt_ten, is_scored, ten_to_label, to_ten
 
 _SIGNAL_TIMEOUT = 45      # seconds per signal before it's marked timed-out
 _CACHE: dict[tuple, dict] = {}
@@ -53,6 +53,8 @@ def _run_one(entry: dict, ticker: str, period: str) -> dict:
         else:
             result = entry["module"].analyze(ticker, period=period)
         ten = result["ten"] if "ten" in result else to_ten(result.get("score"), -1.0, 1.0)
+        if not is_scored(ten):
+            ten = None
         return {
             "owner": owner,
             "ten": ten,
@@ -87,7 +89,7 @@ def analyze_ticker(ticker: str, period: str = "2y", use_cache: bool = True) -> d
                 signals[e["name"]] = _err_signal(e["owner"], "timeout", "signal timed out")
         ex.shutdown(wait=False, cancel_futures=True)
 
-    tens = [s["ten"] for s in signals.values() if isinstance(s["ten"], (int, float))]
+    tens = [s["ten"] for s in signals.values() if is_scored(s["ten"])]
     composite = round(sum(tens) / len(tens), 1) if tens else None
     report = {
         "ticker": ticker.upper(),

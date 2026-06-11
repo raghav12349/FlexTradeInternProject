@@ -22,6 +22,7 @@ import argparse
 from core.env import load_local_keys
 from core.recommender import rank
 from core.runner import analyze_ticker, export_csv, run
+from core.scoring import is_scored
 from core.universe import resolve
 
 
@@ -34,7 +35,7 @@ def print_report(report: dict) -> None:
         print(f"{name:<18}{sig['owner']:<9}{sig['native_score']:>12}   {sig['native_rating']}")
     print("-" * 62)
     comp = report["composite"]
-    comp_str = f"{comp:.1f}/10" if isinstance(comp, (int, float)) else "—"
+    comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
     print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<27}{comp_str:>12}   {report['composite_label']}")
 
     print("\n── How each rating was computed ──")
