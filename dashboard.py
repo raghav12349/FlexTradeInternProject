@@ -135,8 +135,21 @@ class Dashboard(tk.Tk):
         sub.pack(fill="both", expand=True, padx=8, pady=4)
         charts_tab = ttk.Frame(sub)
         signals_tab = ttk.Frame(sub)
+        news_tab = ttk.Frame(sub)
         sub.add(charts_tab, text="Charts")
         sub.add(signals_tab, text="Signals")
+        sub.add(news_tab, text="News")
+
+        self.news_text = tk.Text(news_tab, wrap="word", state="disabled", height=12)
+        nsb = ttk.Scrollbar(news_tab, orient="vertical", command=self.news_text.yview)
+        self.news_text.configure(yscrollcommand=nsb.set)
+        self.news_text.tag_configure("positive", foreground="#2e9e3f", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("negative", foreground="#c0392b", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("neutral", foreground="#777", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("meta", foreground="#888")
+        nsb.pack(side="right", fill="y")
+        self.news_text.pack(side="left", fill="both", expand=True)
+        self._set_text(self.news_text, "News + per-article sentiment appears here after Analyze.")
 
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
@@ -255,7 +268,7 @@ class Dashboard(tk.Tk):
             except Exception as exc:  # noqa: BLE001
                 self._q.put(("error", f"{ticker}: {exc.__class__.__name__}"))
                 return
-            info, bars = None, []
+            info, bars, news = None, [], []
             try:
                 from core.massive import period_to_days
                 from modules.stock_info import get_info, get_ohlc
@@ -263,8 +276,13 @@ class Dashboard(tk.Tk):
                 bars = get_ohlc(ticker, days=int(period_to_days(period) * 0.7))
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                from modules.raghav_news import get_news
+                news = get_news(ticker, 15)
+            except Exception:  # noqa: BLE001
+                pass
             latest = bars[-1] if bars else None
-            self._q.put(("analyze", ticker, report, (info, latest), bars))
+            self._q.put(("analyze", ticker, report, (info, latest), bars, news))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -284,10 +302,11 @@ class Dashboard(tk.Tk):
             pass
         self.after(120, self._poll)
 
-    def _apply_report(self, ticker: str, report: dict, info, bars=None) -> None:
+    def _apply_report(self, ticker: str, report: dict, info, bars=None, news=None) -> None:
         self.last_report = report
         self._show_info(ticker, info)
         self._draw_charts(ticker, report, bars or [], info[0] if info else None)
+        self._show_news(news or [])
         for cat, tree in self.category_trees.items():
             for s in self.specs:
                 if s["category"] != cat:
@@ -340,6 +359,23 @@ class Dashboard(tk.Tk):
             pass
         self.canvas.draw_idle()
         self._set_text(self.summary, summarize(report, info_dict, chg))
+
+    def _show_news(self, news: list) -> None:
+        self.news_text.configure(state="normal")
+        self.news_text.delete("1.0", "end")
+        if not news:
+            self.news_text.insert("end", "No recent news found for this ticker.")
+        else:
+            for n in news:
+                sent = (n.get("sentiment") or "neutral").lower()
+                tag = sent if sent in ("positive", "negative", "neutral") else "neutral"
+                self.news_text.insert("end", f"[{sent.upper()}]  ", (tag,))
+                self.news_text.insert("end", f"{n.get('title', '')}\n")
+                self.news_text.insert("end", f"   {n.get('publisher', '')} · {n.get('published', '')}\n", ("meta",))
+                if n.get("reasoning"):
+                    self.news_text.insert("end", f"   {n['reasoning']}\n", ("meta",))
+                self.news_text.insert("end", "\n")
+        self.news_text.configure(state="disabled")
 
     def _on_signal_select(self, event) -> None:
         sel = event.widget.selection()
