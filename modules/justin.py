@@ -41,6 +41,7 @@ _SIC_RULES: list[tuple[int, int, str]] = [
     (4810, 4899, "Communication Services"),
     (4900, 4991, "Utilities"),
     (6500, 6552, "Real Estate"),
+    (6798, 6798, "Real Estate"),          # Real Estate Investment Trusts (REITs)
     (6000, 6411, "Financials"),           # Banks, brokers, insurance
     (6552, 6799, "Financials"),           # Holding companies, investment offices
     (1311, 1389, "Energy"),               # Oil & gas extraction + field services
@@ -93,17 +94,18 @@ SECTOR_PROFILES: dict[str, dict[str, MetricCfg]] = {
         "ev_to_sales":       MetricCfg("low",  good= 2.0, bad=15.0, weight=0.15),
     },
     "Healthcare": {
-        "price_to_earnings": MetricCfg("low",  good=15.0, bad=45.0, weight=0.20),
-        "price_to_sales":    MetricCfg("low",  good= 2.0, bad=10.0, weight=0.15),
-        "return_on_equity":  MetricCfg("high", good=18.0, bad= 5.0, weight=0.25),
+        "revenue_growth":    MetricCfg("high", good=15.0, bad= 0.0, weight=0.25),
+        "price_to_earnings": MetricCfg("low",  good=15.0, bad=45.0, weight=0.15),
+        "return_on_equity":  MetricCfg("high", good=18.0, bad= 5.0, weight=0.20),
         "debt_to_equity":    MetricCfg("low",  good= 0.3, bad= 1.5, weight=0.20),
         "quick":             MetricCfg("high", good= 2.5, bad= 1.0, weight=0.20),
     },
     "Financials": {
-        "price_to_book":     MetricCfg("low",  good= 0.8, bad= 2.5, weight=0.30),
-        "return_on_equity":  MetricCfg("high", good=15.0, bad= 5.0, weight=0.35),
+        "price_to_book":     MetricCfg("low",  good= 0.8, bad= 2.5, weight=0.25),
+        "return_on_equity":  MetricCfg("high", good=15.0, bad= 5.0, weight=0.30),
         "return_on_assets":  MetricCfg("high", good= 1.5, bad= 0.3, weight=0.20),
-        "price_to_earnings": MetricCfg("low",  good= 8.0, bad=20.0, weight=0.15),
+        "price_to_earnings": MetricCfg("low",  good= 8.0, bad=20.0, weight=0.10),
+        "dividend_yield":    MetricCfg("high", good= 3.5, bad= 1.0, weight=0.15),
     },
     "Energy": {
         "ev_to_ebitda":       MetricCfg("low",  good= 4.0, bad=13.0, weight=0.25),
@@ -113,7 +115,7 @@ SECTOR_PROFILES: dict[str, dict[str, MetricCfg]] = {
         "return_on_equity":   MetricCfg("high", good=15.0, bad= 3.0, weight=0.15),
     },
     "Consumer Discretionary": {
-        "price_to_earnings": MetricCfg("low",  good=15.0, bad=35.0, weight=0.25),
+        "ev_to_ebitda":      MetricCfg("low",  good=10.0, bad=25.0, weight=0.25),
         "debt_to_equity":    MetricCfg("low",  good= 0.5, bad= 2.0, weight=0.25),
         "return_on_equity":  MetricCfg("high", good=20.0, bad= 6.0, weight=0.25),
         "current":           MetricCfg("high", good= 2.0, bad= 1.0, weight=0.25),
@@ -133,15 +135,16 @@ SECTOR_PROFILES: dict[str, dict[str, MetricCfg]] = {
         "current":           MetricCfg("high", good= 2.0, bad= 1.0, weight=0.15),
     },
     "Materials": {
-        "ev_to_ebitda":      MetricCfg("low",  good= 6.0, bad=20.0, weight=0.30),
+        "ev_to_ebitda":      MetricCfg("low",  good= 6.0, bad=20.0, weight=0.25),
         "price_to_book":     MetricCfg("low",  good= 1.0, bad= 4.0, weight=0.20),
         "return_on_equity":  MetricCfg("high", good=15.0, bad= 5.0, weight=0.25),
-        "debt_to_equity":    MetricCfg("low",  good= 0.4, bad= 1.8, weight=0.25),
+        "debt_to_equity":    MetricCfg("low",  good= 0.4, bad= 1.8, weight=0.20),
+        "dividend_yield":    MetricCfg("high", good= 3.0, bad= 0.5, weight=0.10),
     },
     "Real Estate": {
         "dividend_yield":    MetricCfg("high", good= 5.0, bad= 2.0, weight=0.30),
         "ev_to_ebitda":      MetricCfg("low",  good=15.0, bad=32.0, weight=0.25),
-        "debt_to_equity":    MetricCfg("low",  good= 0.8, bad= 2.5, weight=0.25),
+        "debt_to_equity":    MetricCfg("low",  good= 0.8, bad= 4.0, weight=0.25),
         "price_to_book":     MetricCfg("low",  good= 1.0, bad= 3.0, weight=0.20),
     },
     "Utilities": {
@@ -151,11 +154,11 @@ SECTOR_PROFILES: dict[str, dict[str, MetricCfg]] = {
         "ev_to_ebitda":      MetricCfg("low",  good= 8.0, bad=18.0, weight=0.25),
     },
     "Communication Services": {
-        "ev_to_ebitda":      MetricCfg("low",  good= 8.0, bad=22.0, weight=0.25),
-        "ev_to_sales":       MetricCfg("low",  good= 1.0, bad= 8.0, weight=0.20),
+        "revenue_growth":    MetricCfg("high", good=15.0, bad= 0.0, weight=0.20),
+        "ev_to_ebitda":      MetricCfg("low",  good= 8.0, bad=22.0, weight=0.20),
+        "ev_to_sales":       MetricCfg("low",  good= 1.0, bad= 8.0, weight=0.15),
         "return_on_equity":  MetricCfg("high", good=15.0, bad= 5.0, weight=0.25),
-        "debt_to_equity":    MetricCfg("low",  good= 0.5, bad= 2.5, weight=0.15),
-        "price_to_earnings": MetricCfg("low",  good=12.0, bad=30.0, weight=0.15),
+        "debt_to_equity":    MetricCfg("low",  good= 0.5, bad= 2.5, weight=0.20),
     },
 }
 
