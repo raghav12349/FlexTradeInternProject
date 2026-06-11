@@ -11,11 +11,12 @@ from __future__ import annotations
 import math
 
 # Native numeric range per signal, used to map onto 1-10. Signals already on
-# 1-10 don't need an entry.
+# 1-10 (aarav family, samar, justin, anshu/dividends) don't need an entry — they
+# pass through. This documents the ranges the adapters use for signals that
+# score on their own scale.
 NATIVE_RANGES: dict[str, tuple[float, float]] = {
-    "dividends": (-15.0, 21.0),       # anshu
-    "short_interest": (-8.0, 12.0),   # anshu2
-    "liquidity": (0.0, 1.0),          # diya
+    "short_interest": (-8.0, 12.0),   # anshu2 (signed score)
+    "liquidity": (0.0, 1.0),          # diya (0..1 composite)
 }
 
 # cosmo insider sentiment → comparable 1-10 anchor (included in composite).
@@ -24,6 +25,48 @@ INSIDER_SIGNAL_TEN: dict[str, float] = {
     "BEARISH": 2.0,
     "NEUTRAL": 5.0,
 }
+
+# Plain-English "how this rating was computed" line, shown at the top of every
+# signal's breakdown in the UI/CLI so a reader understands the method before the
+# numbers. Keyed by the registry signal name (see core/adapters.py + modules).
+# Summaries condensed from COMPOSITE_INDEX.md.
+SIGNAL_DESCRIPTIONS: dict[str, str] = {
+    "sma": ("Trend structure from 20/50/200-day simple moving averages — stack "
+            "alignment, golden/death cross, SMA50 slope and price extension, "
+            "nudged by volume confidence."),
+    "ema": ("Same trend framework as SMA but exponentially weighted to react "
+            "faster to recent price (stack, crossover, slope, extension)."),
+    "rsi": ("Momentum timing from RSI — its percentile vs the past year, "
+            "price/RSI divergence, bull/bear regime, RSI momentum and failure "
+            "swings."),
+    "macd": ("Momentum acceleration from MACD across multiple timeframes — line "
+             "crossovers, histogram direction, signal-line gap and zero-line "
+             "position, averaged."),
+    "sma_crossover": ("Percentage spread between the 20-day and 50-day SMA; fast "
+                      "above slow is bullish, saturating at ±5%."),
+    "ratios": ("Sector-appropriate financial ratios (P/E, ROE, debt/equity, "
+               "margins, growth, FCF yield) scored against sector benchmarks."),
+    "dividends": ("Dividend quality over ~2 years — payout consistency, growth, "
+                  "payout-ratio health and sustainability (non-payers = neutral)."),
+    "momentum": ("Cross-sectional price momentum (12-1 and 6-1 month), excluding "
+                 "the most recent month to avoid short-term reversal, vs peers."),
+    "short_interest": ("Short-interest positioning — elevated or rising shorting "
+                       "is bearish, covering is bullish (from its signed score)."),
+    "short_volume": ("Short-volume ratio trend over ~30 days — high short volume "
+                     "vs recent history is bearish, declining is bullish."),
+    "news": ("Mean of per-article sentiment (positive/neutral/negative) read from "
+             "each recent article's ticker-specific insight."),
+    "insider": ("Form 4 insider trades over 90 days, weighted by type (buys full, "
+                "sells discounted 75%) and executive seniority."),
+    "liquidity": ("Cash-flow liquidity (operating & free cash flow vs current "
+                  "liabilities), with a volume-based fallback when financials are "
+                  "unavailable."),
+}
+
+
+def signal_description(name: str) -> str | None:
+    """Plain-English description of how a signal's rating is computed."""
+    return SIGNAL_DESCRIPTIONS.get(name)
 
 
 def is_scored(x) -> bool:

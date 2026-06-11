@@ -20,10 +20,43 @@ module so one broken file can't take down the whole run.
 """
 from __future__ import annotations
 
+import builtins
+import contextlib
 import importlib
+import os
 
 OWNERS = ["samar", "aarav", "aarav2", "aarav3", "aarav4", "aarav6", "justin",
           "anshu", "anshu2", "cosmo", "diya", "kavin", "raghav_news"]
+
+
+@contextlib.contextmanager
+def _import_key_shim():
+    """Make bare API-key names resolvable *at import time*.
+
+    Some teammates reference a module-level `MASSIVE_API_KEY` / `API_KEY` that
+    they forgot to define (e.g. diya.py does
+    `HEADERS = {"Authorization": f"Bearer {MASSIVE_API_KEY}"}` with no such
+    global), which makes the module raise NameError on import — before any
+    adapter can inject the key. We temporarily expose the real key via builtins
+    so the bare name resolves and the module imports; the adapters still inject
+    the proper key for the actual API calls. If the author later defines the
+    constant themselves, their module global shadows this and nothing changes.
+    """
+    massive = os.environ.get("MASSIVE_API_KEY")
+    polygon = os.environ.get("POLYGON_API_KEY")
+    seeded = {"MASSIVE_API_KEY": massive, "API_KEY": massive,
+              "POLYGON_API_KEY": polygon}
+    added = []
+    for name, val in seeded.items():
+        if val and not hasattr(builtins, name):
+            setattr(builtins, name, val)
+            added.append(name)
+    try:
+        yield
+    finally:
+        for name in added:
+            with contextlib.suppress(AttributeError):
+                delattr(builtins, name)
 
 
 def load_signals() -> list[dict]:
@@ -44,7 +77,8 @@ def load_signals() -> list[dict]:
         module = None
         error = None
         try:
-            module = importlib.import_module(f"modules.{owner}")
+            with _import_key_shim():
+                module = importlib.import_module(f"modules.{owner}")
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - capture, incl. sys.exit() at import
             error = exc
 

@@ -205,16 +205,18 @@ def _anshu(mod: ModuleType, ticker: str, period: str) -> dict:
         start = earliest
     res = mod.rate_ticker(ticker, start.isoformat(), end.isoformat())
     sig = res.get("signal")
-    if sig in ("N/A", "ERROR"):
+    if sig in ("N/A", "ERROR", "NO DIVIDEND") or res.get("score") is None:
         raise ValueError("; ".join(res.get("reasoning") or []) or str(sig))
+    # anshu's rate_ticker already returns `score` clamped to 1-10 (with its own
+    # signal thresholds), so pass it straight through — do NOT re-map a range.
     raw = res.get("score", 0)
-    ten = to_ten(raw, -15, 21)
-    head = f"Native score {raw} on -15..21  ->  {ten}/10  (signal {sig})"
+    ten = round(max(1.0, min(10.0, float(raw))), 1)
+    head = f"Dividend score {ten}/10  (signal {sig})"
     if res.get("payout_ratio") is not None:
-        head += f"  payout {res['payout_ratio']}%"
+        head += f"  ·  payout {res['payout_ratio']}%"
     lines = [head, *(res.get("reasoning") or [])]
-    return _converted("dividends", ten, sig, lines,
-                      {"raw_score": raw, "signal": sig, "payout_ratio": res.get("payout_ratio")})
+    return _result("dividends", ten, sig, lines,
+                   {"score_1_10": ten, "signal": sig, "payout_ratio": res.get("payout_ratio")})
 
 
 # ───────────────────────── anshu2: short interest (-8..12) ──────────────────

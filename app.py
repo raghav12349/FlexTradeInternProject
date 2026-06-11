@@ -22,25 +22,28 @@ import argparse
 from core.env import load_local_keys
 from core.recommender import rank
 from core.runner import analyze_ticker, export_csv, run
-from core.scoring import is_scored
+from core.scoring import is_scored, signal_description
 from core.universe import resolve
 
 
 def print_report(report: dict) -> None:
     """Pretty-print one ticker's per-signal ratings, then how each was computed."""
     print(f"\n=== {report['ticker']} ===")
-    print(f"{'signal':<18}{'score':>10}   rating")
-    print("-" * 50)
+    print(f"{'signal':<18}{'score':>10}   rating (author's own)")
+    print("-" * 56)
     for name, sig in report["signals"].items():
-        print(f"{name:<18}{sig['native_score']:>10}   {sig['rating']}")
-    print("-" * 50)
+        print(f"{name:<18}{sig['native_score']:>10}   {sig['native_rating']}")
+    print("-" * 56)
     comp = report["composite"]
     comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
-    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<25}{comp_str:>10}   {report['composite_label']}")
+    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<25}{comp_str:>10}   {report['composite_label']}  (house rating)")
 
     print("\n── How each rating was computed ──")
     for name, sig in report["signals"].items():
-        print(f"\n[{name}] → {sig['rating']}  (author's own: {sig['native_rating']})")
+        print(f"\n[{name}] → {sig['native_rating']}")
+        how = signal_description(name)
+        if how:
+            print(f"   How it's computed: {how}")
         for line in sig["breakdown"]:
             print(f"   • {line}")
 

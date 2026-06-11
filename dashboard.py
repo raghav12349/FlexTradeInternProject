@@ -23,7 +23,7 @@ from core.env import load_local_keys
 from core.recommender import rank
 from core.registry import signal_specs
 from core.runner import analyze_ticker, export_csv
-from core.scoring import fmt_ten, is_scored
+from core.scoring import fmt_ten, is_scored, signal_description
 from core.universe import available, resolve
 
 PERIODS = ["6mo", "1y", "2y", "5y"]
@@ -123,7 +123,7 @@ class Dashboard(tk.Tk):
         ib = ttk.LabelFrame(mid, text="Stock info", padding=4)
         ib.pack(side="left", fill="both", expand=True, padx=(0, 6))
         self.info = tk.Text(ib, height=7, wrap="word", state="disabled",
-                            background=self.cget("background"), relief="flat")
+                            background="white", foreground="#1a1a1a", relief="flat")
         self.info.tag_configure("name", font=("Helvetica", 17, "bold"))
         self.info.tag_configure("ticker", font=("Helvetica", 13, "bold"), foreground="#1a5fb4")
         self.info.tag_configure("sub", foreground="#555", font=("Helvetica", 10))
@@ -134,7 +134,8 @@ class Dashboard(tk.Tk):
 
         sm = ttk.LabelFrame(mid, text="Summary", padding=4)
         sm.pack(side="left", fill="both", expand=True)
-        self.summary = tk.Text(sm, height=5, wrap="word", state="disabled")
+        self.summary = tk.Text(sm, height=5, wrap="word", state="disabled",
+                               background="white", foreground="#1a1a1a")
         self.summary.pack(fill="both", expand=True)
 
         # nested notebook: Charts | Signals
@@ -153,13 +154,15 @@ class Dashboard(tk.Tk):
                    command=self.open_news_window).pack(side="left")
         ttk.Label(news_bar, text="  (descriptions + clickable article links)",
                   foreground="#777").pack(side="left")
-        self.news_text = tk.Text(news_tab, wrap="word", state="disabled", height=12)
+        self.news_text = tk.Text(news_tab, wrap="word", state="disabled", height=12,
+                                 background="white", foreground="#1a1a1a")
         nsb = ttk.Scrollbar(news_tab, orient="vertical", command=self.news_text.yview)
         self.news_text.configure(yscrollcommand=nsb.set)
-        self.news_text.tag_configure("positive", foreground="#2e9e3f", font=("Helvetica", 11, "bold"))
-        self.news_text.tag_configure("negative", foreground="#c0392b", font=("Helvetica", 11, "bold"))
-        self.news_text.tag_configure("neutral", foreground="#777", font=("Helvetica", 11, "bold"))
-        self.news_text.tag_configure("meta", foreground="#888")
+        self.news_text.tag_configure("positive", foreground="#1e7d32", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("negative", foreground="#b3261e", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("neutral", foreground="#41484f", font=("Helvetica", 11, "bold"))
+        self.news_text.tag_configure("meta", foreground="#5f6368")
+        self.news_text.tag_configure("reason", foreground="#444444", font=("Helvetica", 10, "italic"))
         nsb.pack(side="right", fill="y")
         self.news_text.pack(side="left", fill="both", expand=True)
         self._set_text(self.news_text, "News + per-article sentiment appears here after Analyze.")
@@ -205,7 +208,11 @@ class Dashboard(tk.Tk):
 
         bd = ttk.LabelFrame(signals_tab, text="How each rating was computed (click a signal)", padding=4)
         bd.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        self.breakdown = tk.Text(bd, height=8, wrap="word", state="disabled")
+        self.breakdown = tk.Text(bd, height=8, wrap="word", state="disabled",
+                                 background="white", foreground="#1a1a1a")
+        self.breakdown.tag_configure("sig", font=("Helvetica", 11, "bold"))
+        self.breakdown.tag_configure("how", foreground="#444444",
+                                     font=("Helvetica", 10, "italic"), spacing3=2)
         sb = ttk.Scrollbar(bd, orient="vertical", command=self.breakdown.yview)
         self.breakdown.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -324,7 +331,7 @@ class Dashboard(tk.Tk):
                     continue
                 sig = report["signals"].get(s["name"], {})
                 tree.item(s["name"], values=(sig.get("native_score", "—"),
-                                             sig.get("rating", "—")))
+                                             sig.get("native_rating", "—")))
         comp = report["composite"]
         comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
         self.composite_var.set(f"Composite: {comp_str} ({report['composite_label']})")
@@ -392,6 +399,20 @@ class Dashboard(tk.Tk):
             key=lambda kv: len(kv[1]), reverse=True)
         return informative + [("neutral", groups["neutral"])]
 
+    @staticmethod
+    def _relevance_line(n: dict, ticker: str) -> str:
+        """A small line on why this article is relevant to the company.
+
+        Prefer the model's per-article reasoning; if missing, fall back to a
+        generic line so every article always carries a relevance note.
+        """
+        reason = (n.get("reasoning") or "").strip()
+        if reason:
+            return f"Why it matters for {ticker}: {reason}"
+        sent = (n.get("sentiment") or "neutral").lower()
+        return (f"Why it matters for {ticker}: {ticker} is a named subject of this "
+                f"article; tagged {sent} for {ticker}.")
+
     def _news_tally(self, groups: list[tuple[str, list]]) -> str:
         counts = {s: len(items) for s, items in groups}
         return (f"Positive {counts.get('positive', 0)}   ·   "
@@ -400,7 +421,8 @@ class Dashboard(tk.Tk):
 
     def _show_news(self, news: list) -> None:
         self._last_news = news
-        self._last_news_ticker = self.last_report["ticker"] if self.last_report else ""
+        ticker = self.last_report["ticker"] if self.last_report else ""
+        self._last_news_ticker = ticker
         self.news_text.configure(state="normal")
         self.news_text.delete("1.0", "end")
         if not news:
@@ -416,6 +438,9 @@ class Dashboard(tk.Tk):
             for n in items:
                 self.news_text.insert("end", f"   • {n.get('title', '')}\n")
                 self.news_text.insert("end", f"      {n.get('publisher', '')} · {n.get('published', '')}\n", ("meta",))
+                self.news_text.insert("end",
+                                      f"      {self._relevance_line(n, ticker)}\n",
+                                      ("reason",))
             self.news_text.insert("end", "\n")
         self.news_text.configure(state="disabled")
 
@@ -437,15 +462,16 @@ class Dashboard(tk.Tk):
         bar.pack(side="right", fill="y")
         txt.pack(side="left", fill="both", expand=True)
 
-        txt.tag_configure("title", font=("Helvetica", 15, "bold"))
+        txt.configure(background="white", foreground="#1a1a1a")
+        txt.tag_configure("title", font=("Helvetica", 15, "bold"), foreground="#111111")
         txt.tag_configure("section", font=("Helvetica", 13, "bold"), spacing1=8, spacing3=4)
-        txt.tag_configure("h", font=("Helvetica", 12, "bold"))
-        txt.tag_configure("positive", foreground="#2e9e3f")
-        txt.tag_configure("negative", foreground="#c0392b")
-        txt.tag_configure("neutral", foreground="#777")
-        txt.tag_configure("meta", foreground="#888", font=("Helvetica", 10))
-        txt.tag_configure("desc", foreground="#222")
-        txt.tag_configure("reason", foreground="#555", font=("Helvetica", 10, "italic"))
+        txt.tag_configure("h", font=("Helvetica", 12, "bold"), foreground="#1a1a1a")
+        txt.tag_configure("positive", foreground="#1e7d32")
+        txt.tag_configure("negative", foreground="#b3261e")
+        txt.tag_configure("neutral", foreground="#41484f")
+        txt.tag_configure("meta", foreground="#5f6368", font=("Helvetica", 10))
+        txt.tag_configure("desc", foreground="#222222")
+        txt.tag_configure("reason", foreground="#444444", font=("Helvetica", 10, "italic"))
         txt.tag_configure("link", foreground="#1a5fb4", underline=True)
 
         groups = self._group_news(news)
@@ -466,8 +492,7 @@ class Dashboard(tk.Tk):
                 txt.insert("end", meta + "\n", ("meta",))
                 if n.get("description"):
                     txt.insert("end", n["description"].strip() + "\n", ("desc",))
-                if n.get("reasoning"):
-                    txt.insert("end", f"Why it matters for {ticker}: {n['reasoning']}\n", ("reason",))
+                txt.insert("end", self._relevance_line(n, ticker) + "\n", ("reason",))
                 url = n.get("url")
                 if url:
                     linktag = f"link{link_i}"
@@ -494,8 +519,11 @@ class Dashboard(tk.Tk):
             for name, sig in report["signals"].items():
                 if only and name != only:
                     continue
-                self.breakdown.insert("end", f"\n[{name}]  {sig['native_score']} → {sig['rating']}"
-                                             f"   (author's own: {sig['native_rating']})\n")
+                self.breakdown.insert("end", f"\n[{name}]  {sig['native_score']} → "
+                                             f"{sig['native_rating']}\n", ("sig",))
+                how = signal_description(name)
+                if how:
+                    self.breakdown.insert("end", f"How it's computed: {how}\n", ("how",))
                 for line in sig.get("breakdown", []):
                     self.breakdown.insert("end", f"   • {line}\n")
         self.breakdown.configure(state="disabled")
@@ -528,9 +556,9 @@ class Dashboard(tk.Tk):
                              width=16, state="readonly")
         combo.pack(side="left", padx=6)
         combo.bind("<<ComboboxSelected>>", lambda _e: self.rec_input.set(self.rec_universe.get()))
-        ttk.Label(top, text="or tickers:").pack(side="left", padx=(8, 4))
+        ttk.Label(top, text="or type anything:").pack(side="left", padx=(8, 4))
         self.rec_input = tk.StringVar()
-        ent = ttk.Entry(top, textvariable=self.rec_input, width=32)
+        ent = ttk.Entry(top, textvariable=self.rec_input, width=34)
         ent.pack(side="left")
         ent.bind("<Return>", lambda _e: self.on_rank())
         ttk.Label(top, text="Period:").pack(side="left", padx=(8, 4))
@@ -541,7 +569,8 @@ class Dashboard(tk.Tk):
         self.rank_btn.pack(side="left", padx=8)
 
         ttk.Label(parent, padding=(8, 0), foreground="#555",
-                  text="Pick a sector basket or paste individual equity tickers. Ranked by the "
+                  text="Type an index (SP500), a sector (tech, healthcare, energy…), or paste "
+                       "tickers — constituents are pulled live from the web. Ranked by the "
                        "1-10 composite (top = best to long, bottom = best to short).").pack(fill="x")
 
         frm = ttk.LabelFrame(parent, text="Ranking", padding=4)
