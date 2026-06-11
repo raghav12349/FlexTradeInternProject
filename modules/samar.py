@@ -40,6 +40,7 @@ import os
 import re
 import statistics
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # API key lives in config.py (gitignored) or the MASSIVE_API_KEY env var --
@@ -975,20 +976,28 @@ def add_value_scores(tickers, snap, sectors, results):
     print(f"{'─'*60}")
     print(f"  (First run: ~30s if cache empty. Subsequent runs: near-instant.)")
 
-    filings = {}
-    for i, t in enumerate(tickers):
-        # Only rate-limit when we're about to hit the API (cache miss).
-        # Avoids a 25+ second stall on warm-cache runs.
+    def _fetch_one(t):
         cache_path = os.path.join(FIN_CACHE_DIR, f"{t}.json")
         cache_hit = (
             os.path.exists(cache_path) and
             (date.today() - date.fromtimestamp(os.path.getmtime(cache_path))).days <= FIN_CACHE_MAX_AGE_DAYS
         )
-        filings[t] = _fetch_financials(t)
-        if (i + 1) % 100 == 0:
-            print(f"  {i+1}/{len(tickers)} financials loaded")
+        data = _fetch_financials(t)
         if not cache_hit:
-            time.sleep(0.05)
+            time.sleep(0.05)  # rate-limit only actual API calls
+        return t, data
+
+    filings = {}
+    n_total = len(tickers)
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_fetch_one, t): t for t in tickers}
+        for future in as_completed(futures):
+            t, data = future.result()
+            filings[t] = data
+            done_count += 1
+            if done_count % 100 == 0:
+                print(f"  {done_count}/{n_total} financials loaded")
 
     pe_raw = {t: v for t in tickers
               if (v := _pe_ratio(filings.get(t, []), prices.get(t))) is not None}
@@ -1158,7 +1167,6 @@ def _print_single_result(ticker, v, sectors, cap_tiers, header):
     print(f"  Shape         : {v['shape']}  (shape_rank {v['shape_rank']}/4 -- secondary tiebreaker only)")
     print(f"  Strong?       : {v['is_strong']}")
     print(f"  Score 1-10    : {v['score_1_10']:.2f}  (momentum only)")
-    print(f"  Recommendation: {v['recommendation']}  (momentum only)")
     print(f"  {'─'*50}")
     pe_s   = f"{v['pe_ratio']:.1f}" if v.get("pe_ratio") else "--"
     pe_z_s = f"{v['pe_z']:+.3f}" if v.get("pe_z") is not None else "--"
@@ -1325,11 +1333,12 @@ def scan_best(top_n=10):
         sec = all_sectors.get(t, "Unknown")
         cap = cap_tiers.get(t, "?")
         s3  = f"{v['score_3f']:>6.2f}" if v.get("score_3f") is not None else f"{'--':>6}"
-        call = v.get("rec_3f") or v["recommendation"]
+        call = v.get("rec_3f") or (v["recommendation"] + "*")
         print(f"  {i:<5} {t:<8} {sec:<26} {cap:<6} {v['z_combined']:>6.2f} {s3} {v['shape']:<13} {call:<11}")
     if candidates:
         print(f"\n  Cap = crude size tier by index membership (Large = S&P500/Nasdaq100, Mid = S&P MidCap 400).")
         print(f"  3F = 3-factor score (Momentum + P/E + P/B average percentile rank, 1-10 scale); '--' = P/E or P/B data unavailable.")
+        print(f"  Call* = momentum-only recommendation (no P/E/P/B data available for that ticker).")
 
     if not candidates:
         print("  None found -- no stock in this universe is currently ACCELERATING or DIP.")
