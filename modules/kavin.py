@@ -38,17 +38,10 @@ SATURATION_PCT = 0.05
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
+
 def _get_api_key() -> str:
-    """Resolve API key from core.env (project standard) or env var fallback."""
-    try:
-        from core.env import get_key
-        return get_key("MASSIVE_API_KEY")
-    except Exception:
-        import os
-        key = os.getenv("MASSIVE_API_KEY", "")
-        if not key:
-            sys.exit("MASSIVE_API_KEY not set. Export it or add it to .keys.env")
-        return key
+    return API_KEY
 
 
 def _fetch_sma(ticker: str, window: int, api_key: str) -> Optional[float]:
