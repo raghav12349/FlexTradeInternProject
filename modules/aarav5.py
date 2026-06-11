@@ -71,11 +71,77 @@ def trend_label(score):
 
 
 def buy_label(score):
-    if score >= 8.5: return "Strong Buy"
-    if score >= 6.5: return "Buy"
+    if score >= 8:   return "Strong Buy"
+    if score >= 6:   return "Buy"
     if score >= 4.5: return "Neutral / Hold"
-    if score >= 2.5: return "Sell / Avoid"
+    if score >= 3:   return "Sell / Avoid"
     return "Strong Sell"
+
+
+def _volume_confidence(volumes):
+    """High/Normal/Low — 20d avg vs 90d avg volume."""
+    dates = sorted(volumes.keys())
+    if len(dates) < 20:
+        return "Normal"
+    v20 = sum(volumes[d] for d in dates[-20:]) / 20
+    v90 = sum(volumes[d] for d in dates[-90:]) / min(90, len(dates))
+    if v90 == 0:
+        return "Normal"
+    ratio = v20 / v90
+    if ratio >= 1.15:
+        return "High"
+    if ratio <= 0.85:
+        return "Low"
+    return "Normal"
+
+
+def _recency_surge(prices):
+    """True if stock up >12% over last 20 trading days."""
+    dates = sorted(prices.keys())
+    if len(dates) < 20:
+        return False
+    p_now = prices[dates[-1]]
+    p_20  = prices[dates[-20]]
+    return p_20 > 0 and (p_now - p_20) / p_20 > 0.12
+
+
+def _spy_bullish():
+    """True if SPY is above its 50d SMA right now."""
+    try:
+        today = datetime.today().strftime("%Y-%m-%d")
+        start = (datetime.today() - timedelta(days=120)).strftime("%Y-%m-%d")
+        bars  = client.get_aggs("SPY", 1, "day", start, today,
+                                adjusted="true", sort="asc", limit=200)
+        closes = [b.close for b in bars]
+        return len(closes) >= 50 and closes[-1] > sum(closes[-50:]) / 50
+    except Exception:
+        return True  # fail open
+
+
+def composite_label(comp, rsi_score, sma_score=None, volumes=None, prices=None):
+    """
+    Multi-gate composite label. Buy signals require all of:
+      1. RSI >= 5          — momentum not bearish
+      2. SMA >= 6.5        — structural trend stack confirmed
+      3. SPY above 50d SMA — broad market not in downtrend
+      4. Volume not Low    — institutional participation
+      5. No recency surge  — not chasing extended move (>12% in 20d)
+    """
+    if comp is None:
+        return None
+    label = buy_label(comp)
+    if label in ("Buy", "Strong Buy"):
+        if rsi_score is not None and rsi_score < 5:
+            return "Neutral / Hold"
+        if sma_score is not None and sma_score < 6.5:
+            return "Neutral / Hold"
+        if not _spy_bullish():
+            return "Neutral / Hold"
+        if volumes is not None and _volume_confidence(volumes) == "Low":
+            return "Neutral / Hold"
+        if prices is not None and _recency_surge(prices):
+            return "Neutral / Hold"
+    return label
 
 
 # ── Data fetchers (self-contained so aarav5 has no import-time side effects) ────
@@ -275,15 +341,6 @@ def analyze(symbol, prices, volumes, ticker_details=None):
             for k in module_scores if module_scores[k] is not None
         ) / total_weight
 
-    # MA200 context: in a confirmed long-term uptrend, don't call it a sell on
-    # short-term momentum alone — floor the composite at 3.5.
-    current_price = sorted(prices.values())[-1] if prices else 0
-    dates = sorted(prices.keys())
-    closes = [prices[d] for d in dates]
-    ma200 = sum(closes[-200:]) / min(200, len(closes)) if closes else 0
-    if composite is not None and current_price > ma200:
-        composite = max(composite, 3.5)
-
     comp_rounded = round(composite, 1) if composite is not None else None
 
     return {
@@ -298,7 +355,10 @@ def analyze(symbol, prices, volumes, ticker_details=None):
         "composite": {
             "score":          comp_rounded,
             "trend":          trend_label(comp_rounded) if comp_rounded else "N/A",
-            "recommendation": buy_label(comp_rounded) if comp_rounded else "N/A",
+            "recommendation": composite_label(
+                comp_rounded, rsi_score,
+                sma_score=sma_score, volumes=volumes, prices=prices,
+            ) if comp_rounded else "N/A",
         } if comp_rounded is not None else None,
     }
 

@@ -4,52 +4,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a multi-module stock analysis project built by an intern team. Each team member owns one Python module in `modules/`. The entry point is `app.py` at the project root.
+This is a multi-module stock analysis project built by an intern team. Each team
+member owns one or more Python modules in `modules/`. `app.py` at the project
+root is the intended integration entry point. The shared GitHub repo is
+**public**: `https://github.com/raghav12349/FlexTradeInternProject` (branch `main`).
+
+## ⚠️ API key / secrets status (READ FIRST)
+
+The premium key `UPTtLEsTavIccF5ESguZSdtWW3zX93WW` is **hardcoded and publicly
+committed** in `modules/anshu2.py` and `modules/justin.py` (committed by
+teammates, live on `origin/main`). Because the repo is public, **this key is
+leaked and should be rotated.** The owner (Aarav) has stated he accepts API
+exposure for *local-only* use, but a public push is a different risk class — he
+chose env-var handling specifically to keep the key off GitHub for his own files.
+
+Current key handling per module (working tree):
+
+| Module | Key source |
+|---|---|
+| aarav.py, aarav2.py, aarav3.py, aarav4.py, anshu.py | `os.environ["POLYGON_API_KEY"]` — **fail-fast if unset** (no fallback) |
+| diya.py, samar.py | `os.environ.get("MASSIVE_API_KEY")` |
+| cosmo.py | placeholder `"ENTER API HERE"` |
+| **anshu2.py, justin.py** | **hardcoded premium key — PUBLIC LEAK, rotate** |
+
+Do not re-introduce hardcoded keys into the aarav modules. Set the key locally:
+
+```bash
+export POLYGON_API_KEY=your_key_here     # aarav*, anshu
+export MASSIVE_API_KEY=your_key_here     # diya, samar
+```
+
+## Environment / runtime gotcha
+
+- `massive` is **not installed** anywhere on this machine. Every module that does
+  `try: from massive import RESTClient / except ImportError: from polygon import
+  RESTClient` runs on the **polygon fallback** (`polygon-api-client`).
+- The user's terminal uses **Homebrew Python 3.14.5** (`/opt/homebrew/bin/python3`),
+  not pyenv 3.12.4. `polygon-api-client` is installed in all three interpreters
+  (pyenv 3.12.4, system 3.9.6, Homebrew 3.14.5). If a fresh interpreter ever
+  errors with `ModuleNotFoundError: No module named 'polygon'`, install with:
+  `python3 -m pip install --break-system-packages polygon-api-client`.
+- Polygon **free tier ≈ 5 req/min** (HTTP 429 when exceeded). The premium key has
+  no such limit, so the aarav modules make direct calls with no throttling.
 
 ## Running Modules
 
 ```bash
-# Run aarav.py (MACD analysis) — interactive mode
-python modules/aarav.py
-
-# Run with CLI args: symbol and optional timeframe
-python modules/aarav.py AAPL
-python modules/aarav.py TSLA 3M
-```
-
-## Environment
-
-Set `POLYGON_API_KEY` in your environment to use your own Polygon.io API key. Modules fall back to a hardcoded key if unset.
-
-```bash
-export POLYGON_API_KEY=your_key_here
+export POLYGON_API_KEY=...           # required — modules fail fast without it
+python3 modules/aarav.py  AAPL       # MACD
+python3 modules/aarav2.py AAPL       # RSI  (was aarav.2.py; renamed to aarav2.py)
+python3 modules/aarav3.py AAPL       # SMA
+python3 modules/aarav4.py AAPL       # EMA
+# All four accept comma-separated symbols and print a per-cap-tier comparison:
+python3 modules/aarav4.py "AAPL, MSFT, NVDA"
 ```
 
 ## Architecture
 
-- `modules/<name>.py` — one module per team member; each module is self-contained
-- `app.py` — root entry point (currently a stub) intended to compose/integrate the modules
-- All market data is fetched from the [Polygon.io REST API](https://polygon.io/docs)
+- `modules/<name>.py` — self-contained per-member modules.
+- All market data from the [Polygon.io REST API](https://polygon.io/docs) via the
+  `massive`/`polygon` RESTClient (drop-in compatible: `get_aggs`, `get_sma`,
+  `get_ema`, `get_ticker_details`; aarav2/RSI uses raw `requests` + `BASE_URL`).
 
-### aarav.py — MACD Stock Analysis
+### The four aarav modules (all owned by Aarav)
 
-Core public API:
+All four share the same scaffolding: market-cap tiering (`classify_cap` /
+`CAP_TIERS`: Mega ≥$200B, Large ≥$10B, Mid ≥$2B, else Small), `fetch_daily_prices`
+→ closes+volumes, a volume profile (20d vs 90d → High/Normal/Low confidence),
+context (price, 200-day MA, 52-week high), a 1–10 score, and shared
+`trend_label` / `buy_label` thresholds (≥8 Strong Buy, ≥6 Buy, 5 Neutral, ≥3
+Sell, else Strong Sell). Multi-symbol runs print a `print_comparison` table
+ranked within each cap tier.
 
+- **aarav.py — MACD.** Multi-timeframe MACD scoring (`score_macd`, 1–10). 200-day
+  MA floor prevents labeling an uptrend pullback as a sell (floored at 4.5 when
+  price > MA200). `analyze()` returns `context` / `timeframes` / `composite`.
+- **aarav2.py — RSI** (formerly `aarav.2.py`). Trader-grade RSI with 5 weighted
+  components: percentile rank, divergence, regime, momentum, failure swings.
+  Uses raw `requests` against `BASE_URL` (not the RESTClient).
+- **aarav3.py — SMA.** Trader-grade SMA over windows (20, 50, 200) via
+  `client.get_sma()`. 4 weighted components: **stack alignment 35%**
+  (price>20>50>200), **crossover 25%** (golden/death cross of SMA50 over SMA200),
+  **slope 20%** (least-squares SMA50 trend), **extension 20%** (stretch from
+  SMA20). Volume-confidence nudge on the raw score.
+- **aarav4.py — EMA.** Same 4-component framework as aarav3 but via
+  `client.get_ema()` over (20, 50, 200). Identical weights; reacts faster than
+  SMA (earlier signal, more whipsaw, tempered by the volume nudge). Public API:
+  `fetch_ema_series`, `analyze_ema`, `analyze`, `print_result`, `print_comparison`.
+
+Shared public surface (aarav3/aarav4):
 ```python
-from modules.aarav import fetch_daily_prices, analyze, print_result
-
-prices = fetch_daily_prices(symbol, start_date, end_date)  # → {date_str: close_price}
-result = analyze(symbol, prices, timeframe)                 # timeframe: "1M","3M","6M","1Y","2Y","ALL"
+prices, volumes = fetch_daily_prices(symbol, start, end)
+ema_map = {w: fetch_ema_series(symbol, w) for w in EMA_WINDOWS}   # aarav4
+result  = analyze(symbol, prices, volumes, ticker_details, ema_map=ema_map)
 print_result(result)
 ```
 
-`analyze()` returns a structured dict:
-- `context` — current price, 200-day MA, 52-week high
-- `timeframes` — list of per-timeframe MACD scores and recommendations
-- `composite` — averaged score, overall trend, and buy/sell recommendation
+### Other team modules
 
-**Scoring:** `score_macd()` produces a 1–10 score. Scores ≥8 = Strong Buy, ≥6 = Buy, 5 = Neutral, ≤3 = Sell/Strong Sell. A 200-day MA floor prevents labeling a pullback in an uptrend as a sell (score floored at 4.5 when price > MA200).
+`aarav5.py` (untracked/new), `anshu.py` (dividend factor), `anshu2.py` (short
+interest), `cosmo.py` (insider), `diya.py` (liquidity), `justin.py` (financial
+ratios), `samar.py` (momentum), `kavin.py`. Integrated into the app via adapters;
+each signal is shown in its owner's native scale.
 
-### Other modules
+## Known cosmetic issue
 
-`cosmo.py`, `samar.py`, `kavin.py`, `diya.py`, `anshu.py`, `justin.py` are currently empty stubs to be implemented by each team member.
+All four aarav modules use `datetime.utcfromtimestamp(...)` which emits a
+`DeprecationWarning` on Python 3.12+. Harmless. Modernize to
+`datetime.fromtimestamp(ts, datetime.UTC)` across all four if desired (offered,
+not yet applied).
