@@ -9,9 +9,19 @@ try:
 except ImportError:
     from polygon import RESTClient
 
-API_KEY = os.environ.get("POLYGON_API_KEY")
-if not API_KEY:
-    raise RuntimeError("POLYGON_API_KEY environment variable is not set")
+def _load_api_key():
+    k = os.environ.get("POLYGON_API_KEY")
+    if k:
+        return k
+    import pathlib
+    env_file = pathlib.Path(__file__).parent.parent / ".keys.env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("POLYGON_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("POLYGON_API_KEY not set — add it to .keys.env or export it")
+
+API_KEY = _load_api_key()
 client = RESTClient(API_KEY)
 
 # SMA windows we stack to read trend structure
@@ -151,7 +161,7 @@ def _linear_slope(values):
     return num / den if den else 0.0
 
 
-def analyze_sma(sma_map, current_price, volume_confidence="Normal"):
+def analyze_sma(sma_map, current_price, ma200=None, week52_high=None, volume_confidence="Normal"):
     """
     Trader-grade SMA analysis using 4 weighted components.
 
@@ -190,7 +200,8 @@ def analyze_sma(sma_map, current_price, volume_confidence="Normal"):
         # Partial credit: count how many "price above SMA" conditions hold
         above = sum(1 for s in (sma20, sma50, sma200) if s is not None and current_price > s)
         total = sum(1 for s in (sma20, sma50, sma200) if s is not None)
-        stack_score = 3.5 + (above / total) * 3.0 if total else 5.0
+        # 2.0 when price below all SMAs, scales to 6.0 when price above all but out of order
+        stack_score = 2.0 + (above / total) * 4.0 if total else 5.0
         stack_label = f"Mixed ({above}/{total} SMAs below price)"
 
     # ── 2. CROSSOVER (25%) ───────────────────────────────────────────────────
@@ -230,13 +241,14 @@ def analyze_sma(sma_map, current_price, volume_confidence="Normal"):
 
     # ── 4. EXTENSION FROM SMA20 (20%) ────────────────────────────────────────
     ext_pct = (current_price - sma20) / sma20 * 100 if sma20 else 0.0
-    # Slightly above is healthy; far above is overextended; below is a discount
-    if ext_pct >= 12:     ext_score = 3.0   # overextended, pullback risk
-    elif ext_pct >= 5:    ext_score = 5.5
-    elif ext_pct >= 0:    ext_score = 7.5   # riding above the mean
-    elif ext_pct >= -5:   ext_score = 6.0   # mild discount
-    elif ext_pct >= -12:  ext_score = 4.5
-    else:                 ext_score = 3.0   # deep below mean
+    if ext_pct >= 15:     ext_score = 2.5   # very overextended, high pullback risk
+    elif ext_pct >= 10:   ext_score = 3.5   # overextended
+    elif ext_pct >= 5:    ext_score = 5.5   # slightly extended
+    elif ext_pct >= 2:    ext_score = 8.0   # healthy ride above mean
+    elif ext_pct >= 0:    ext_score = 7.5   # right at mean
+    elif ext_pct >= -5:   ext_score = 6.0   # mild discount (healthy pullback)
+    elif ext_pct >= -10:  ext_score = 4.5   # deeper pullback
+    else:                 ext_score = 3.0   # far below mean
 
     # ── WEIGHTED COMPOSITE ───────────────────────────────────────────────────
     raw = (
@@ -245,6 +257,18 @@ def analyze_sma(sma_map, current_price, volume_confidence="Normal"):
         slope_score * 0.20 +
         ext_score   * 0.20
     )
+
+    # 52-week high proximity bonus: near highs in a trend = momentum confirmation
+    if week52_high and week52_high > 0:
+        pct_from_high = (week52_high - current_price) / week52_high
+        if pct_from_high <= 0.03:
+            raw += 0.5
+        elif pct_from_high <= 0.10:
+            raw += 0.25
+
+    # MA200 floor: don't flag a pullback in an uptrend as a sell
+    if ma200 and current_price > ma200:
+        raw = max(raw, 4.5)
 
     # Volume confidence: expanding volume validates the move; contracting fades it
     if volume_confidence == "High":
@@ -296,7 +320,7 @@ def analyze(symbol, all_prices, all_volumes=None, ticker_details=None, sma_map=N
         "avg_20d": None, "avg_90d": None, "ratio": None, "confidence": "Normal"
     }
 
-    sma_data = analyze_sma(sma_map, current_price, vol_profile["confidence"]) if sma_map else None
+    sma_data = analyze_sma(sma_map, current_price, ma200, week52_high, vol_profile["confidence"]) if sma_map else None
     td = ticker_details or {}
 
     composite_score = round(sma_data["score"], 1) if sma_data else None

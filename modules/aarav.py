@@ -3,9 +3,19 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-API_KEY = os.environ.get("POLYGON_API_KEY")
-if not API_KEY:
-    raise RuntimeError("POLYGON_API_KEY environment variable is not set")
+def _load_api_key():
+    k = os.environ.get("POLYGON_API_KEY")
+    if k:
+        return k
+    import pathlib
+    env_file = pathlib.Path(__file__).parent.parent / ".keys.env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("POLYGON_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("POLYGON_API_KEY not set — add it to .keys.env or export it")
+
+API_KEY = _load_api_key()
 BASE_URL = "https://api.polygon.io"
 
 # Valid timeframe keys the user/UI can pass in
@@ -76,27 +86,64 @@ def fetch_daily_prices(symbol, start_date, end_date):
 
 
 def ema(values, period):
+    """EMA with SMA seed for first `period` bars — eliminates cold-start price bias."""
+    if len(values) < period:
+        return []
     k = 2 / (period + 1)
-    result = []
-    for i, v in enumerate(values):
-        result.append(v if i == 0 else v * k + result[-1] * (1 - k))
-    return result
+    result = [sum(values[:period]) / period]
+    for v in values[period:]:
+        result.append(v * k + result[-1] * (1 - k))
+    return result  # length = len(values) - period + 1
 
 
-def compute_macd(prices_dict, start_date, end_date):
-    filtered = {d: p for d, p in prices_dict.items() if start_date <= d <= end_date}
-    if len(filtered) < 35:
+def _linear_slope(values):
+    """Least-squares slope."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(values) / n
+    num = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+    den = sum((i - x_mean) ** 2 for i in range(n))
+    return num / den if den else 0.0
+
+
+def compute_macd(prices_dict):
+    """
+    Compute MACD on the FULL price history.
+    Returns a dict with current values + dated series for timeframe slicing.
+    """
+    dates = sorted(prices_dict.keys())
+    closes = [prices_dict[d] for d in dates]
+    if len(closes) < 35:
         return None
-    dates = sorted(filtered.keys())
-    closes = [filtered[d] for d in dates]
 
     ema12 = ema(closes, 12)
     ema26 = ema(closes, 26)
-    macd_line = [e12 - e26 for e12, e26 in zip(ema12, ema26)]
+    if not ema12 or not ema26:
+        return None
+    # ema12 is 14 bars longer; drop the lead to align
+    ema12_a = ema12[14:]
+    macd_line = [e12 - e26 for e12, e26 in zip(ema12_a, ema26)]
+    if len(macd_line) < 9:
+        return None
     signal_line = ema(macd_line, 9)
-    histogram = [m - s for m, s in zip(macd_line, signal_line)]
-
-    return macd_line[-1], signal_line[-1], histogram[-1], macd_line, signal_line, histogram
+    if not signal_line:
+        return None
+    # signal_line[i] ↔ macd_line[i+8]
+    macd_a = macd_line[8:]
+    histogram = [m - s for m, s in zip(macd_a, signal_line)]
+    # date alignment: ema26 consumes 25 bars, signal consumes 8 more → offset 33
+    aligned_dates = dates[33:]
+    return {
+        "macd":       macd_a[-1],
+        "signal":     signal_line[-1],
+        "histogram":  histogram[-1],
+        "macd_line":  macd_a,
+        "sig_line":   signal_line,
+        "hist_series": histogram,
+        "dates":      aligned_dates,
+    }
 
 
 def compute_context(prices_dict):
@@ -144,49 +191,66 @@ def compute_volume_profile(volumes_dict, start_date, end_date):
     }
 
 
-def score_macd(macd, signal, hist, macd_line, signal_line, histogram_series,
-               current_price, ma200, week52_high, volume_confidence="Normal"):
+def score_macd(macd_full, start_date, volume_confidence="Normal"):
+    """
+    Score MACD for a specific timeframe window.
+
+    Uses histogram linear-regression slope over the window (not just last 3 bars)
+    so different timeframes produce genuinely different scores.
+
+    Weights:
+      30%  MACD vs Signal line (trend direction)
+      35%  Histogram slope over window (momentum acceleration/deceleration)
+      15%  Histogram sign (current momentum direction)
+      10%  MACD zero line (absolute trend)
+      10%  Zero-line cross (recent reversal signal)
+    """
+    macd   = macd_full["macd"]
+    signal = macd_full["signal"]
+    hist   = macd_full["histogram"]
+
+    # Slice histogram and MACD to this timeframe window
+    window_hist = [h for d, h in zip(macd_full["dates"], macd_full["hist_series"]) if d >= start_date]
+    window_macd = [m for d, m in zip(macd_full["dates"], macd_full["macd_line"]) if d >= start_date]
+
     score = 5.0
 
-    score += 1.5 if macd > signal else -1.5
+    # 1. MACD vs Signal (30%)
+    score += 2.0 if macd > signal else -2.0
 
-    # Recency-weighted histogram acceleration (3x, 2x, 1x)
-    if len(histogram_series) >= 3:
-        h1, h2, h3 = histogram_series[-3], histogram_series[-2], histogram_series[-1]
-        weighted_delta = (h3 - h2) * 3 + (h2 - h1) * 2
-        if weighted_delta > 0:
-            score += 1.5
-        elif weighted_delta < 0:
-            score -= 1.5
+    # 2. Histogram slope over the timeframe window (35%)
+    if len(window_hist) >= 5:
+        slope = _linear_slope(window_hist)
+        # Normalize by full histogram range so short/long windows are comparable
+        hist_range = max(macd_full["hist_series"]) - min(macd_full["hist_series"])
+        norm = slope / hist_range * 100 if hist_range > 0.001 else 0
+        if norm > 5:    score += 2.5
+        elif norm > 1:  score += 1.5
+        elif norm > 0:  score += 0.5
+        elif norm > -1: score -= 0.5
+        elif norm > -5: score -= 1.5
+        else:           score -= 2.5
 
+    # 3. Histogram sign (15%)
+    score += 0.75 if hist > 0 else -0.75
+
+    # 4. MACD zero line (10%)
     score += 0.5 if macd > 0 else -0.5
-    score += 0.5 if hist > 0 else -0.5
 
-    if len(macd_line) >= 5:
-        score += 0.5 if macd_line[-1] > macd_line[-5] else -0.5
-
-    # 200-day MA floor: pullback in uptrend is not a sell
-    if current_price > ma200:
-        score = max(score, 4.5)
-
-    # 52-week high proximity boost
-    if week52_high > 0:
-        pct_from_high = (week52_high - current_price) / week52_high
-        if pct_from_high <= 0.05:
+    # 5. Zero-line cross within window — fresh cross = stronger signal (10%)
+    if len(window_macd) >= 3:
+        if window_macd[-2] <= 0 < window_macd[-1]:
             score += 1.0
-        elif pct_from_high <= 0.15:
-            score += 0.5
+        elif window_macd[-2] >= 0 > window_macd[-1]:
+            score -= 1.0
 
-    # Volume confidence adjustment: expanding volume validates the signal direction;
-    # contracting volume means the move lacks conviction — push score toward neutral.
+    # Volume confidence: expanding confirms, contracting dampens
     if volume_confidence == "High":
-        # Amplify: pull score further from 5 in whichever direction it already leans
         score += 0.5 if score > 5 else -0.5
     elif volume_confidence == "Low":
-        # Dampen: pull score 1 point toward neutral (5)
         score += 1.0 if score < 5 else -1.0
 
-    return max(1, min(10, round(score)))
+    return max(1, min(10, round(score, 1)))
 
 
 def trend_label(score):
@@ -250,18 +314,22 @@ def analyze(symbol, all_prices, all_volumes=None, ticker_details=None, timeframe
         "composite":  None,
     }
 
+    # Compute MACD once on full history; timeframes only change the scoring window
+    macd_full = compute_macd(all_prices)
+    if macd_full is None:
+        return result  # not enough data at all
+
     scores = []
     for tf_key, (label, days) in selected:
         start = max(
             (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d"),
             two_years_ago,
         )
-        macd_result = compute_macd(all_prices, start, today)
-        if macd_result is None:
+        # Check at least 5 MACD histogram bars exist in this window
+        window_count = sum(1 for d in macd_full["dates"] if d >= start)
+        if window_count < 5:
             result["timeframes"].append({"key": tf_key, "label": label, "error": "Not enough data"})
             continue
-
-        macd, signal, hist, macd_line, signal_line, histogram_series = macd_result
 
         vol_profile = (
             compute_volume_profile(all_volumes, start, today)
@@ -269,17 +337,15 @@ def analyze(symbol, all_prices, all_volumes=None, ticker_details=None, timeframe
             {"avg_20d": None, "avg_90d": None, "ratio": None, "confidence": "Normal"}
         )
 
-        score = score_macd(macd, signal, hist, macd_line, signal_line,
-                           histogram_series, current_price, ma200, week52_high,
-                           vol_profile["confidence"])
+        score = score_macd(macd_full, start, vol_profile["confidence"])
         scores.append(score)
 
         result["timeframes"].append({
             "key":       tf_key,
             "label":     label,
-            "macd":      round(macd, 4),
-            "signal":    round(signal, 4),
-            "histogram": round(hist, 4),
+            "macd":      round(macd_full["macd"], 4),
+            "signal":    round(macd_full["signal"], 4),
+            "histogram": round(macd_full["histogram"], 4),
             "score":     score,
             "trend":     trend_label(score),
             "recommendation": buy_label(score),

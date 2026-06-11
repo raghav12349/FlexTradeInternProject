@@ -3,9 +3,19 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-API_KEY = os.environ.get("POLYGON_API_KEY")
-if not API_KEY:
-    raise RuntimeError("POLYGON_API_KEY environment variable is not set")
+def _load_api_key():
+    k = os.environ.get("POLYGON_API_KEY")
+    if k:
+        return k
+    import pathlib
+    env_file = pathlib.Path(__file__).parent.parent / ".keys.env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("POLYGON_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("POLYGON_API_KEY not set — add it to .keys.env or export it")
+
+API_KEY = _load_api_key()
 BASE_URL = "https://api.polygon.io"
 
 # Market cap thresholds (USD)
@@ -350,6 +360,9 @@ def analyze(symbol, all_prices, all_volumes=None, ticker_details=None, rsi_serie
     td = ticker_details or {}
 
     composite_score = round(rsi_data["score"], 1) if rsi_data else None
+    # MA200 floor: don't label a pullback in an uptrend as a sell
+    if composite_score is not None and current_price > ma200:
+        composite_score = max(composite_score, 4.5)
 
     return {
         "symbol":  symbol.upper(),
