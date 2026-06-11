@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import math
-import os
 import sys
 import warnings
 from datetime import date, timedelta
@@ -25,7 +24,9 @@ try:
 except ImportError:
     sys.exit("Missing dependency: run  pip3 install requests")
 
-API_KEY = os.environ.get("MASSIVE_API_KEY", "")
+# ─── HARD-CODE YOUR API KEY HERE ─────────────────────────────────────────────
+API_KEY = "UPTtLEsTavIccF5ESguZSdtWW3zX93WW"
+# ─────────────────────────────────────────────────────────────────────────────
 
 BASE_URL = "https://api.massive.com"
 ENDPOINT = "/stocks/filings/vX/form-4"
@@ -52,7 +53,7 @@ BEARISH_THRESHOLD = -0.70
 # company's market cap. This prevents large-cap mega-sells from looking scary
 # when they're actually a tiny fraction of the company's overall value.
 # e.g. 0.0005 = 0.05% of market cap — even $20M at Tesla is well below this.
-BEARISH_MIN_MCAP_FRACTION = 0.02   # 2% of market cap
+BEARISH_MIN_MCAP_FRACTION = 0.0005   # 0.05% of market cap
 #
 # BEARISH also requires at least this many distinct sellers, so that a single
 # insider's routine plan-based selling cannot trigger the label.
@@ -84,24 +85,28 @@ def fmt_usd(n) -> str:
 
 def fetch_market_cap(ticker: str) -> Optional[float]:
     """
-    Fetches the current market cap from the Massive ticker snapshot endpoint.
-    Returns None if unavailable — signal engine degrades gracefully.
+    Fetches market cap from the Massive Ticker Overview endpoint:
+      GET /v3/reference/tickers/{ticker}
+    Response: { results: { market_cap: float, ... } }
+    Returns None if unavailable — the BEARISH market-cap gate is then skipped.
     """
+    url = f"{BASE_URL}/v3/reference/tickers/{ticker.upper()}"
     try:
         resp = requests.get(
-            f"{BASE_URL}/v2/snapshot/locale/us/markets/stocks/tickers/{ticker.upper()}",
+            url,
             headers={"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"},
             timeout=10,
         )
-        if resp.ok:
-            data = resp.json()
-            # market_cap may be nested under ticker details
-            snap = data.get("ticker") or data.get("results") or {}
-            mcap = snap.get("market_cap") or snap.get("marketCap")
-            if mcap:
-                return float(mcap)
-    except Exception:
-        pass
+        if not resp.ok:
+            print(f"[warn] Ticker overview returned {resp.status_code} for {ticker} — market cap gate skipped.")
+            return None
+        data = resp.json()
+        mcap = (data.get("results") or {}).get("market_cap")
+        if mcap:
+            return float(mcap)
+        print(f"[warn] market_cap field missing in ticker overview response for {ticker} — market cap gate skipped.")
+    except Exception as e:
+        print(f"[warn] Exception fetching market cap for {ticker}: {e} — market cap gate skipped.")
     return None
 
 
@@ -215,6 +220,7 @@ def compute_signal(transactions: list, ticker: str) -> dict:
         market_cap = fetch_market_cap(ticker)
         if market_cap and market_cap > 0:
             fraction = sell_value / market_cap
+            #print(f"[debug] market cap: {fmt_usd(market_cap)} | sell value: {fmt_usd(sell_value)} | fraction: {fraction*100:.4f}% | threshold: {BEARISH_MIN_MCAP_FRACTION*100:.4f}%")
             if fraction < BEARISH_MIN_MCAP_FRACTION:
                 return {
                     "signal": "NEUTRAL",
@@ -222,6 +228,8 @@ def compute_signal(transactions: list, ticker: str) -> dict:
                                f"({fraction*100:.4f}% of ~{fmt_usd(market_cap)} market cap) — "
                                "immaterial relative to company size."),
                 }
+        else:
+            print(f"[debug] market cap unavailable — market cap gate skipped, proceeding to BEARISH.")
 
         # All gates passed — genuinely unusual selling
         return {
@@ -263,8 +271,8 @@ def parse_args():
 
 
 def main():
-    if not API_KEY:
-        sys.exit("MASSIVE_API_KEY environment variable not set.")
+    if API_KEY == "YOUR_API_KEY_HERE":
+        sys.exit("Please set your API key in the API_KEY variable at the top of the script.")
 
     args      = parse_args()
     to_date   = args.to_date   or date.today().isoformat()
