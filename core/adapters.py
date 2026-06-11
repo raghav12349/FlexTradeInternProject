@@ -221,11 +221,10 @@ def _anshu(mod: ModuleType, ticker: str, period: str) -> dict:
 
 # ───────────────────────── anshu2: short interest (-8..12) ──────────────────
 def _anshu2(mod: ModuleType, ticker: str, period: str) -> dict:
-    earliest = date(2015, 1, 1)
+    # anshu2 caps its lookback at 1 year ("short interest is a short-term
+    # indicator"), so keep the window safely under 365 days regardless of period.
     end = date.today()
-    start = end - timedelta(days=max(period_to_days(period), 365))
-    if start < earliest:
-        start = earliest
+    start = end - timedelta(days=min(period_to_days(period), 360))
     res = mod.rate_ticker(ticker, start.isoformat(), end.isoformat())
     sig = res.get("signal")
     if sig in ("N/A", "NO DATA", "ERROR"):
