@@ -56,6 +56,8 @@ except ImportError:
 BASE_URL = "https://api.massive.com"
 HERE     = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR  = os.path.join(HERE, "output")
+FIN_CACHE_DIR          = os.path.join(HERE, ".cache", "financials")
+FIN_CACHE_MAX_AGE_DAYS = 90
 
 # Calendar-day offsets used to LOCATE each trading-day snapshot.
 TRADING_DAYS_252_CAL = 370   # ~252 trading days ≈ 370 calendar days back
@@ -820,16 +822,208 @@ def export_csv(results, index_name, short_code, sectors=None, excluded=None):
         w.writerow([])
         w.writerow(["rank", "ticker", "sector", "momentum_12_1_pct", "momentum_6_1_pct", "momentum_3_1_pct",
                      "z_12_1", "z_6_1", "z_3_1", "z_combined", "z_combined_sector", "z_combined_cap", "shape", "shape_rank",
-                     "is_strong", "score_1_10", "recommendation"])
+                     "is_strong", "score_1_10", "recommendation",
+                     "pe_ratio", "pe_z", "pb_ratio", "pb_z", "score_3f", "rec_3f"])
         for i, (t, v) in enumerate(rows, 1):
-            zsec = round(v["z_combined_sector"], 4) if v["z_combined_sector"] is not None else ""
-            zcap = round(v["z_combined_cap"], 4) if v.get("z_combined_cap") is not None else ""
+            zsec    = round(v["z_combined_sector"], 4) if v["z_combined_sector"] is not None else ""
+            zcap    = round(v["z_combined_cap"], 4) if v.get("z_combined_cap") is not None else ""
+            pe_val  = round(v["pe_ratio"], 2) if v.get("pe_ratio") else ""
+            pe_z_v  = round(v["pe_z"], 4) if v.get("pe_z") is not None else ""
+            pb_val  = round(v["pb_ratio"], 2) if v.get("pb_ratio") else ""
+            pb_z_v  = round(v["pb_z"], 4) if v.get("pb_z") is not None else ""
+            s3_val  = round(v["score_3f"], 2) if v.get("score_3f") is not None else ""
+            r3_val  = v.get("rec_3f") or ""
             w.writerow([i, t, sectors.get(t, "Unknown"), round(v["m12_pct"], 2), round(v["m6_pct"], 2), round(v["m3_pct"], 2),
                          round(v["z12"], 4), round(v["z6"], 4), round(v["z3"], 4), round(v["z_combined"], 4), zsec, zcap,
-                         v["shape"], v["shape_rank"], v["is_strong"], round(v["score_1_10"], 2), v["recommendation"]])
+                         v["shape"], v["shape_rank"], v["is_strong"], round(v["score_1_10"], 2), v["recommendation"],
+                         pe_val, pe_z_v, pb_val, pb_z_v, s3_val, r3_val])
 
     print(f"\n  Full ranked list saved: {path}")
     return rows
+
+# ── Value signals: P/E and P/B ────────────────────────────────────────────────
+
+def _fetch_financials(ticker, retries=3):
+    """Annual filings for ticker, shared cache with backtest_value.py (90-day TTL)."""
+    os.makedirs(FIN_CACHE_DIR, exist_ok=True)
+    path = os.path.join(FIN_CACHE_DIR, f"{ticker}.json")
+    if os.path.exists(path):
+        age_days = (date.today() - date.fromtimestamp(os.path.getmtime(path))).days
+        if age_days <= FIN_CACHE_MAX_AGE_DAYS:
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    url = (f"{BASE_URL}/vX/reference/financials"
+           f"?ticker={ticker}&timeframe=annual&limit=6&apiKey={API_KEY}")
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=15) as r:
+                data = json.load(r)
+            filings = data.get("results", [])
+            with open(path, "w") as f:
+                json.dump(filings, f)
+            return filings
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                time.sleep(5 * (attempt + 1))
+            else:
+                break
+        except Exception:
+            break
+    with open(path, "w") as f:
+        json.dump([], f)
+    return []
+
+
+def _latest_filing(filings):
+    """Most recent annual filing by filing_date (no as-of date cap — live use)."""
+    valid = [f for f in filings if f.get("filing_date")]
+    return max(valid, key=lambda f: f["filing_date"]) if valid else None
+
+
+def _pe_ratio(filings, price):
+    """P/E = price / diluted_EPS. Returns None if EPS <= 0, negative, or missing."""
+    if not price or not filings:
+        return None
+    best = _latest_filing(filings)
+    if not best:
+        return None
+    inc = best.get("financials", {}).get("income_statement", {})
+    eps_entry = inc.get("diluted_earnings_per_share", {})
+    eps = eps_entry.get("value") if isinstance(eps_entry, dict) else None
+    if not eps or eps <= 0:
+        return None
+    return price / eps
+
+
+def _pb_ratio(filings, price):
+    """P/B = price / book-value-per-share. Returns None if equity <= 0 or missing."""
+    if not price or not filings:
+        return None
+    best = _latest_filing(filings)
+    if not best:
+        return None
+    fin = best.get("financials", {})
+    eq_entry = fin.get("balance_sheet", {}).get("equity", {})
+    eq = eq_entry.get("value") if isinstance(eq_entry, dict) else None
+    sh_entry = fin.get("income_statement", {}).get("basic_average_shares", {})
+    shares = sh_entry.get("value") if isinstance(sh_entry, dict) else None
+    if not eq or eq <= 0 or not shares or shares <= 0:
+        return None
+    bps = eq / shares
+    if bps <= 0:
+        return None
+    return price / bps
+
+
+def _sector_value_z(raw_dict, sectors):
+    """Sector-relative negated z-score: low ratio -> high (positive) score.
+    Mirrors backtest_value.sector_relative_value logic for live-screener use."""
+    from collections import defaultdict
+    by_sec = defaultdict(list)
+    for t, val in raw_dict.items():
+        sec = sectors.get(t, "Unknown")
+        if sec != "Unknown":
+            by_sec[sec].append((t, val))
+    out = {}
+    for sec, members in by_sec.items():
+        if len(members) < SECTOR_MIN_GROUP:
+            continue
+        vals = [v for _, v in members]
+        med, mad = _med_mad(vals)
+        if mad == 0:
+            continue
+        for t, v in members:
+            out[t] = -((v - med) / mad)
+    return out
+
+
+def _pct_rank_dict(score_dict, universe):
+    """Linear percentile rank 0→1 within universe, ascending (higher score = higher rank)."""
+    srt = sorted(universe, key=lambda t: score_dict[t])
+    n = len(srt)
+    return {t: i / (n - 1) if n > 1 else 0.5 for i, t in enumerate(srt)}
+
+
+def _rec_3f(score_3f, is_strong):
+    """3-factor recommendation: requires both a strong 3F rank AND momentum confirmation."""
+    if score_3f is None:
+        return None
+    if is_strong and score_3f >= 8.0:
+        return "STRONG BUY"
+    if is_strong and score_3f >= 6.0:
+        return "BUY"
+    if score_3f >= 5.0:
+        return "HOLD"
+    return "DON'T BUY"
+
+
+def add_value_scores(tickers, snap, sectors, results):
+    """
+    Fetch P/E and P/B for every ticker, compute sector-relative z-scores, and
+    attach pe_ratio / pb_ratio / pe_z / pb_z / score_3f / rec_3f to each entry
+    in results in-place.
+    Shares .cache/financials/ with backtest_value.py — near-instant if pre-warmed.
+    score_3f is average percentile rank of (SecZ, pe_z, pb_z), scaled 1-10.
+    """
+    prices = snap["p21"]
+
+    print(f"\n{'─'*60}")
+    print("STEP 4 — Fetching fundamentals (P/E + P/B) for value signals")
+    print(f"{'─'*60}")
+    print(f"  (First run: ~30s if cache empty. Subsequent runs: near-instant.)")
+
+    filings = {}
+    for i, t in enumerate(tickers):
+        # Only rate-limit when we're about to hit the API (cache miss).
+        # Avoids a 25+ second stall on warm-cache runs.
+        cache_path = os.path.join(FIN_CACHE_DIR, f"{t}.json")
+        cache_hit = (
+            os.path.exists(cache_path) and
+            (date.today() - date.fromtimestamp(os.path.getmtime(cache_path))).days <= FIN_CACHE_MAX_AGE_DAYS
+        )
+        filings[t] = _fetch_financials(t)
+        if (i + 1) % 100 == 0:
+            print(f"  {i+1}/{len(tickers)} financials loaded")
+        if not cache_hit:
+            time.sleep(0.05)
+
+    pe_raw = {t: v for t in tickers
+              if (v := _pe_ratio(filings.get(t, []), prices.get(t))) is not None}
+    pe_z = _sector_value_z(pe_raw, sectors)
+
+    pb_raw = {t: v for t in tickers
+              if (v := _pb_ratio(filings.get(t, []), prices.get(t))) is not None}
+    pb_z = _sector_value_z(pb_raw, sectors)
+
+    print(f"  P/E data: {len(pe_z)} tickers  |  P/B data: {len(pb_z)} tickers")
+
+    # 3-factor percentile rank: SecZ + sector-relative P/E-z + sector-relative P/B-z
+    secz_valid = {t: v["z_combined_sector"]
+                  for t, v in results.items() if v.get("z_combined_sector") is not None}
+    common3 = set(secz_valid) & set(pe_z) & set(pb_z)
+
+    if len(common3) >= SECTOR_MIN_GROUP:
+        mp = _pct_rank_dict(secz_valid, common3)
+        pp = _pct_rank_dict(pe_z, common3)
+        bp = _pct_rank_dict(pb_z, common3)
+        comb3 = {t: (mp[t] + pp[t] + bp[t]) / 3 for t in common3}
+    else:
+        comb3 = {}
+
+    print(f"  3-factor coverage: {len(comb3)}/{len(tickers)} tickers")
+
+    for t, v in results.items():
+        v["pe_ratio"] = pe_raw.get(t)
+        v["pb_ratio"] = pb_raw.get(t)
+        v["pe_z"]     = pe_z.get(t)
+        v["pb_z"]     = pb_z.get(t)
+        s3 = round(1 + comb3[t] * 9, 2) if t in comb3 else None
+        v["score_3f"] = s3
+        v["rec_3f"]   = _rec_3f(s3, v.get("is_strong", False))
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run(index_key):
@@ -851,11 +1045,12 @@ def run(index_key):
     print(f"  Index 3-1  median: {stats['med3']*100:+.2f}%  MAD: {stats['mad3']*100:.2f}%")
     print(f"  {n_strong} of {len(results)} stocks classified 'strong' (all 3 windows z > {MIN_STRENGTH_Z})")
 
+    add_value_scores(tickers, snap, sectors, results)
     rows = export_csv(results, index_name, short_code, sectors, excluded)
 
     n = min(TOP_N, len(rows))
     print(f"\n{'─'*60}")
-    print(f"TOP {n} — {index_name}  (by combined z-score)")
+    print(f"TOP {n} — {index_name}  (by momentum z-score)")
     print(f"  12-1: {snap['d252']} → {snap['d21']}   6-1: {snap['d126']} → {snap['d21']}   3-1: {snap['d63']} → {snap['d21']}")
     print(f"{'─'*60}")
     print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'12-1%':>8} {'6-1%':>8} {'3-1%':>8} {'Z12':>6} {'Z6':>6} {'Z3':>6} {'Zcomb':>6} {'SecZ':>6} {'CapZ':>6} {'Shape':<13} {'1-10':>6} {'Call':<11}")
@@ -890,6 +1085,25 @@ def run(index_key):
               f"nearly identical to Zcomb and not a meaningful diversification check.")
     print(f"  Recommendation = a label derived purely from this script's z-score/shape math, "
           f"NOT a backtested or validated trading signal -- treat as a relative-strength summary.")
+
+    # ── 3-Factor top 10 ──────────────────────────────────────────────────────
+    rows_3f = sorted(
+        [(t, v) for t, v in results.items() if v.get("score_3f") is not None],
+        key=lambda kv: kv[1]["score_3f"], reverse=True
+    )
+    n3 = min(TOP_N, len(rows_3f))
+    if n3 > 0:
+        print(f"\n{'─'*60}")
+        print(f"3-FACTOR TOP {n3} — {index_name}  (Momentum + P/E + P/B combined)")
+        print(f"{'─'*60}")
+        print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'P/E':>7} {'P/B':>6} {'SecZ':>7} {'3F':>6} {'3F-Call':<11}")
+        for i, (t, v) in enumerate(rows_3f[:n3], 1):
+            pe   = f"{v['pe_ratio']:>7.1f}" if v.get("pe_ratio") else f"{'--':>7}"
+            pb   = f"{v['pb_ratio']:>6.2f}" if v.get("pb_ratio") else f"{'--':>6}"
+            secz = f"{v['z_combined_sector']:>7.2f}" if v.get("z_combined_sector") is not None else f"{'--':>7}"
+            print(f"  {i:<5} {t:<8} {sectors.get(t,'Unknown'):<26} {pe} {pb} {secz} {v['score_3f']:>6.2f} {v['rec_3f'] or '--':<11}")
+    else:
+        print(f"\n  3-Factor Score: insufficient P/E/P/B data for this index.")
 
     print(f"\n✓ Done. (Single-window momentum >=100% is excluded as suspect data.)")
 
@@ -943,8 +1157,19 @@ def _print_single_result(ticker, v, sectors, cap_tiers, header):
     print(f"  CapTier-rel z : {capz}")
     print(f"  Shape         : {v['shape']}  (shape_rank {v['shape_rank']}/4 -- secondary tiebreaker only)")
     print(f"  Strong?       : {v['is_strong']}")
-    print(f"  Score 1-10    : {v['score_1_10']:.2f}")
-    print(f"  Recommendation: {v['recommendation']}")
+    print(f"  Score 1-10    : {v['score_1_10']:.2f}  (momentum only)")
+    print(f"  Recommendation: {v['recommendation']}  (momentum only)")
+    print(f"  {'─'*50}")
+    pe_s   = f"{v['pe_ratio']:.1f}" if v.get("pe_ratio") else "--"
+    pe_z_s = f"{v['pe_z']:+.3f}" if v.get("pe_z") is not None else "--"
+    pb_s   = f"{v['pb_ratio']:.2f}" if v.get("pb_ratio") else "--"
+    pb_z_s = f"{v['pb_z']:+.3f}" if v.get("pb_z") is not None else "--"
+    print(f"  P/E ratio     : {pe_s}  (sector-rel z = {pe_z_s})")
+    print(f"  P/B ratio     : {pb_s}  (sector-rel z = {pb_z_s})")
+    if v.get("score_3f") is not None:
+        print(f"  3-Factor Score: {v['score_3f']:.2f}/10  →  {v['rec_3f']}")
+    else:
+        print(f"  3-Factor Score: --  (P/E or P/B unavailable for this ticker)")
 
 
 def run_single(ticker, index_key):
@@ -962,6 +1187,7 @@ def run_single(ticker, index_key):
     momentum_dict, _ = compute_momentum(tickers, snap)
     cap_tiers = build_cap_tiers()
     results, stats = standardize(momentum_dict, sectors, cap_tiers)
+    add_value_scores(tickers, snap, sectors, results)
 
     if ticker_in_index:
         if ticker not in results:
@@ -974,6 +1200,13 @@ def run_single(ticker, index_key):
             print(f"\n  {ticker}: no valid data (missing price or suspect move).")
             return
         v = _score_extra_ticker(ticker, extra[ticker], momentum_dict, results, stats, sectors, cap_tiers)
+        # Add raw P/E and P/B for display — z-scores and 3F score not computed
+        # since ranking requires the ticker to be part of the universe distribution.
+        extra_filings = _fetch_financials(ticker)
+        extra_price = snap["p21"].get(ticker)
+        v["pe_ratio"] = _pe_ratio(extra_filings, extra_price)
+        v["pb_ratio"] = _pb_ratio(extra_filings, extra_price)
+        v["pe_z"] = v["pb_z"] = v["score_3f"] = v["rec_3f"] = None
         print(f"\n  Note: {ticker} is not a constituent of {index_name} -- "
               f"scored against the index's distribution, not included in it.")
 
@@ -999,6 +1232,7 @@ def run_vs_diverse(ticker):
     print(f"  {len(momentum_dict)} stocks with valid data")
     cap_tiers = build_cap_tiers()
     results, stats = standardize(momentum_dict, DIVERSE_UNIVERSE, cap_tiers)
+    add_value_scores(universe, snap, DIVERSE_UNIVERSE, results)
 
     if in_universe:
         if ticker not in results:
@@ -1011,6 +1245,11 @@ def run_vs_diverse(ticker):
             print(f"\n  {ticker}: no valid data (missing price or suspect move).")
             return
         v = _score_extra_ticker(ticker, extra[ticker], momentum_dict, results, stats, DIVERSE_UNIVERSE, cap_tiers)
+        extra_filings = _fetch_financials(ticker)
+        extra_price = snap["p21"].get(ticker)
+        v["pe_ratio"] = _pe_ratio(extra_filings, extra_price)
+        v["pb_ratio"] = _pb_ratio(extra_filings, extra_price)
+        v["pe_z"] = v["pb_z"] = v["score_3f"] = v["rec_3f"] = None
         print(f"\n  Note: {ticker} is not part of the diverse universe -- "
               f"scored against it, not included in it.")
 
@@ -1069,6 +1308,7 @@ def scan_best(top_n=10):
     print(f"  {len(momentum_dict)} stocks with valid data")
 
     results, stats = standardize(momentum_dict, all_sectors, cap_tiers)
+    add_value_scores(universe, snap, all_sectors, results)
 
     # "Best" = momentum currently building/recovering (ACCELERATING or DIP)
     # AND ranked by z_combined within that subset.
@@ -1080,15 +1320,16 @@ def scan_best(top_n=10):
     print(f"BEST {n} — ACCELERATING/DIP stocks, ranked by combined z-score")
     print(f"  (out of {len(results)} scored, {len(candidates)} have an ACCELERATING/DIP shape)")
     print(f"{'─'*60}")
-    print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'Cap':<6} {'Zcomb':>6} {'CapZ':>6} {'Shape':<13} {'1-10':>6} {'Call':<11}")
+    print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'Cap':<6} {'Zcomb':>6} {'3F':>6} {'Shape':<13} {'Call':<11}")
     for i, (t, v) in enumerate(candidates[:n], 1):
         sec = all_sectors.get(t, "Unknown")
         cap = cap_tiers.get(t, "?")
-        capz = f"{v['z_combined_cap']:>6.2f}" if v["z_combined_cap"] is not None else f"{'--':>6}"
-        print(f"  {i:<5} {t:<8} {sec:<26} {cap:<6} {v['z_combined']:>6.2f} {capz} {v['shape']:<13} {v['score_1_10']:>6.2f} {v['recommendation']:<11}")
+        s3  = f"{v['score_3f']:>6.2f}" if v.get("score_3f") is not None else f"{'--':>6}"
+        call = v.get("rec_3f") or v["recommendation"]
+        print(f"  {i:<5} {t:<8} {sec:<26} {cap:<6} {v['z_combined']:>6.2f} {s3} {v['shape']:<13} {call:<11}")
     if candidates:
         print(f"\n  Cap = crude size tier by index membership (Large = S&P500/Nasdaq100, Mid = S&P MidCap 400).")
-        print(f"  CapZ = z_combined relative to peers in the same cap tier ('--' = tier too small to standardize).")
+        print(f"  3F = 3-factor score (Momentum + P/E + P/B average percentile rank, 1-10 scale); '--' = P/E or P/B data unavailable.")
 
     if not candidates:
         print("  None found -- no stock in this universe is currently ACCELERATING or DIP.")
