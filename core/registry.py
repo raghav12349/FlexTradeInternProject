@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import importlib
 
-OWNERS = ["samar", "aarav", "aarav2", "aarav3", "aarav4", "justin",
+OWNERS = ["samar", "aarav", "aarav2", "aarav3", "aarav4", "aarav6", "justin",
           "anshu", "anshu2", "cosmo", "diya", "kavin", "raghav_news"]
 
 

@@ -29,18 +29,18 @@ from core.universe import resolve
 def print_report(report: dict) -> None:
     """Pretty-print one ticker's per-signal ratings, then how each was computed."""
     print(f"\n=== {report['ticker']} ===")
-    print(f"{'signal':<18}{'owner':<9}{'their score':>12}   their rating")
-    print("-" * 62)
+    print(f"{'signal':<18}{'score':>10}   rating")
+    print("-" * 50)
     for name, sig in report["signals"].items():
-        print(f"{name:<18}{sig['owner']:<9}{sig['native_score']:>12}   {sig['native_rating']}")
-    print("-" * 62)
+        print(f"{name:<18}{sig['native_score']:>10}   {sig['rating']}")
+    print("-" * 50)
     comp = report["composite"]
     comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
-    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<27}{comp_str:>12}   {report['composite_label']}")
+    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<25}{comp_str:>10}   {report['composite_label']}")
 
     print("\n── How each rating was computed ──")
     for name, sig in report["signals"].items():
-        print(f"\n[{sig['owner']} · {name}] → {sig['native_rating']}")
+        print(f"\n[{name}] → {sig['rating']}  (author's own: {sig['native_rating']})")
         for line in sig["breakdown"]:
             print(f"   • {line}")
 

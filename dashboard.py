@@ -43,8 +43,8 @@ def _cap(mcap) -> str:
 class Dashboard(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("FlexTrade")
-        self.geometry("1080x820")
+        self.title("FlexTrade Equity Research Bot")
+        self.geometry("1440x1080")
 
         self.specs = signal_specs()
         self.signal_names = [s["name"] for s in self.specs]
@@ -122,7 +122,13 @@ class Dashboard(tk.Tk):
 
         ib = ttk.LabelFrame(mid, text="Stock info", padding=4)
         ib.pack(side="left", fill="both", expand=True, padx=(0, 6))
-        self.info = tk.Text(ib, height=5, wrap="word", state="disabled")
+        self.info = tk.Text(ib, height=7, wrap="word", state="disabled",
+                            background=self.cget("background"), relief="flat")
+        self.info.tag_configure("name", font=("Helvetica", 17, "bold"))
+        self.info.tag_configure("ticker", font=("Helvetica", 13, "bold"), foreground="#1a5fb4")
+        self.info.tag_configure("sub", foreground="#555", font=("Helvetica", 10))
+        self.info.tag_configure("price", foreground="#1a5fb4", font=("Helvetica", 11, "bold"))
+        self.info.tag_configure("desc", foreground="#333", font=("Helvetica", 9))
         self.info.pack(fill="both", expand=True)
         self._set_text(self.info, "Search a company or enter a ticker, then Analyze.")
 
@@ -181,22 +187,20 @@ class Dashboard(tk.Tk):
         for cat in cats:
             panel = ttk.LabelFrame(cont, text=cat, padding=4)
             panel.pack(side="left", fill="both", expand=True, padx=3)
-            tree = ttk.Treeview(panel, columns=("owner", "score", "rating"),
+            tree = ttk.Treeview(panel, columns=("score", "rating"),
                                 show="tree headings", height=5)
             tree.heading("#0", text="Signal")
-            tree.heading("owner", text="By")
             tree.heading("score", text="Score")
             tree.heading("rating", text="Rating")
-            tree.column("#0", width=110)
-            tree.column("owner", width=54, anchor="center")
-            tree.column("score", width=58, anchor="center")
-            tree.column("rating", width=100, anchor="center")
+            tree.column("#0", width=124)
+            tree.column("score", width=64, anchor="center")
+            tree.column("rating", width=112, anchor="center")
             tree.pack(fill="both", expand=True)
             tree.bind("<<TreeviewSelect>>", self._on_signal_select)
             for s in self.specs:
                 if s["category"] == cat:
                     tree.insert("", "end", iid=s["name"], text=s["name"],
-                                values=(s["owner"], "—", "—"))
+                                values=("—", "—"))
             self.category_trees[cat] = tree
 
         bd = ttk.LabelFrame(signals_tab, text="How each rating was computed (click a signal)", padding=4)
@@ -319,8 +323,8 @@ class Dashboard(tk.Tk):
                 if s["category"] != cat:
                     continue
                 sig = report["signals"].get(s["name"], {})
-                tree.item(s["name"], values=(s["owner"], sig.get("native_score", "—"),
-                                             sig.get("native_rating", "—")))
+                tree.item(s["name"], values=(sig.get("native_score", "—"),
+                                             sig.get("rating", "—")))
         comp = report["composite"]
         comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
         self.composite_var.set(f"Composite: {comp_str} ({report['composite_label']})")
@@ -343,17 +347,24 @@ class Dashboard(tk.Tk):
         self.analyze_btn.configure(state="normal")
 
     def _show_info(self, ticker: str, info) -> None:
+        self.info.configure(state="normal")
+        self.info.delete("1.0", "end")
         if not info or not info[0]:
-            self._set_text(self.info, f"{ticker}: stock info unavailable.")
+            self.info.insert("end", f"{ticker}: stock info unavailable.")
+            self.info.configure(state="disabled")
             return
         i, bar = info
-        ohlc = (f"O {bar['o']}  H {bar['h']}  L {bar['l']}  C {bar['c']}" if bar else "price n/a")
-        self._set_text(
-            self.info,
-            f"{i['name']} ({i['ticker']}) · {i['exchange']}\n"
-            f"Sector: {i['sector']}   Industry: {i['industry']}   Cap: {_cap(i['market_cap'])}\n"
-            f"Latest: {ohlc}\n\n{(i['description'] or '')[:500]}",
-        )
+        self.info.insert("end", f"{i['name']}  ", ("name",))
+        self.info.insert("end", f"{i['ticker']}\n", ("ticker",))
+        self.info.insert("end", f"{i['exchange']}   ·   {i['sector']}   ·   {i['industry']}"
+                                f"   ·   Cap {_cap(i['market_cap'])}\n", ("sub",))
+        if bar:
+            self.info.insert("end", f"O {bar['o']}   H {bar['h']}   L {bar['l']}   C {bar['c']}\n", ("price",))
+        else:
+            self.info.insert("end", "price n/a\n", ("price",))
+        if i.get("description"):
+            self.info.insert("end", "\n" + (i["description"] or "")[:360], ("desc",))
+        self.info.configure(state="disabled")
 
     def _draw_charts(self, ticker: str, report: dict, bars: list, info_dict) -> None:
         from core.charts import draw_price, draw_signal_bars, summarize
@@ -367,6 +378,26 @@ class Dashboard(tk.Tk):
         self.canvas.draw_idle()
         self._set_text(self.summary, summarize(report, info_dict, chg))
 
+    @staticmethod
+    def _group_news(news: list) -> list[tuple[str, list]]:
+        """Bucket articles by sentiment. Positive & negative first (the most
+        informative), ordered by count so the bigger pile is on top; neutral last.
+        """
+        groups: dict[str, list] = {"positive": [], "negative": [], "neutral": []}
+        for n in news:
+            sent = (n.get("sentiment") or "neutral").lower()
+            groups[sent if sent in groups else "neutral"].append(n)
+        informative = sorted(
+            [("positive", groups["positive"]), ("negative", groups["negative"])],
+            key=lambda kv: len(kv[1]), reverse=True)
+        return informative + [("neutral", groups["neutral"])]
+
+    def _news_tally(self, groups: list[tuple[str, list]]) -> str:
+        counts = {s: len(items) for s, items in groups}
+        return (f"Positive {counts.get('positive', 0)}   ·   "
+                f"Negative {counts.get('negative', 0)}   ·   "
+                f"Neutral {counts.get('neutral', 0)}")
+
     def _show_news(self, news: list) -> None:
         self._last_news = news
         self._last_news_ticker = self.last_report["ticker"] if self.last_report else ""
@@ -374,16 +405,18 @@ class Dashboard(tk.Tk):
         self.news_text.delete("1.0", "end")
         if not news:
             self.news_text.insert("end", "No recent news found for this ticker.")
-        else:
-            for n in news:
-                sent = (n.get("sentiment") or "neutral").lower()
-                tag = sent if sent in ("positive", "negative", "neutral") else "neutral"
-                self.news_text.insert("end", f"[{sent.upper()}]  ", (tag,))
-                self.news_text.insert("end", f"{n.get('title', '')}\n")
-                self.news_text.insert("end", f"   {n.get('publisher', '')} · {n.get('published', '')}\n", ("meta",))
-                if n.get("reasoning"):
-                    self.news_text.insert("end", f"   {n['reasoning']}\n", ("meta",))
-                self.news_text.insert("end", "\n")
+            self.news_text.configure(state="disabled")
+            return
+        groups = self._group_news(news)
+        self.news_text.insert("end", self._news_tally(groups) + "\n\n", ("meta",))
+        for sent, items in groups:
+            if not items:
+                continue
+            self.news_text.insert("end", f"{sent.upper()}  ({len(items)})\n", (sent,))
+            for n in items:
+                self.news_text.insert("end", f"   • {n.get('title', '')}\n")
+                self.news_text.insert("end", f"      {n.get('publisher', '')} · {n.get('published', '')}\n", ("meta",))
+            self.news_text.insert("end", "\n")
         self.news_text.configure(state="disabled")
 
     def open_news_window(self) -> None:
@@ -404,40 +437,47 @@ class Dashboard(tk.Tk):
         bar.pack(side="right", fill="y")
         txt.pack(side="left", fill="both", expand=True)
 
-        txt.tag_configure("h", font=("Helvetica", 13, "bold"))
-        txt.tag_configure("positive", foreground="#2e9e3f", font=("Helvetica", 11, "bold"))
-        txt.tag_configure("negative", foreground="#c0392b", font=("Helvetica", 11, "bold"))
-        txt.tag_configure("neutral", foreground="#777", font=("Helvetica", 11, "bold"))
+        txt.tag_configure("title", font=("Helvetica", 15, "bold"))
+        txt.tag_configure("section", font=("Helvetica", 13, "bold"), spacing1=8, spacing3=4)
+        txt.tag_configure("h", font=("Helvetica", 12, "bold"))
+        txt.tag_configure("positive", foreground="#2e9e3f")
+        txt.tag_configure("negative", foreground="#c0392b")
+        txt.tag_configure("neutral", foreground="#777")
         txt.tag_configure("meta", foreground="#888", font=("Helvetica", 10))
         txt.tag_configure("desc", foreground="#222")
         txt.tag_configure("reason", foreground="#555", font=("Helvetica", 10, "italic"))
         txt.tag_configure("link", foreground="#1a5fb4", underline=True)
 
+        groups = self._group_news(news)
         txt.configure(state="normal")
-        txt.insert("end", f"Recent news for {ticker}\n\n", ("h",))
-        for i, n in enumerate(news):
-            sent = (n.get("sentiment") or "neutral").lower()
-            tag = sent if sent in ("positive", "negative", "neutral") else "neutral"
-            txt.insert("end", f"[{sent.upper()}]  ", (tag,))
-            txt.insert("end", f"{n.get('title', '')}\n", ("h",))
-            meta = f"{n.get('publisher', '')}"
-            if n.get("author"):
-                meta += f" · {n['author']}"
-            meta += f" · {n.get('published', '')}"
-            txt.insert("end", meta + "\n", ("meta",))
-            if n.get("description"):
-                txt.insert("end", n["description"].strip() + "\n", ("desc",))
-            if n.get("reasoning"):
-                txt.insert("end", f"Why it matters for {ticker}: {n['reasoning']}\n", ("reason",))
-            url = n.get("url")
-            if url:
-                linktag = f"link{i}"
-                txt.insert("end", "Open article ↗", ("link", linktag))
-                txt.tag_bind(linktag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
-                txt.tag_bind(linktag, "<Enter>", lambda _e: txt.configure(cursor="hand2"))
-                txt.tag_bind(linktag, "<Leave>", lambda _e: txt.configure(cursor="arrow"))
+        txt.insert("end", f"Recent news for {ticker}\n", ("title",))
+        txt.insert("end", self._news_tally(groups) + "\n", ("meta",))
+        link_i = 0
+        for sent, items in groups:
+            if not items:
+                continue
+            txt.insert("end", f"\n{sent.upper()}  ({len(items)})\n", ("section", sent))
+            for n in items:
+                txt.insert("end", f"{n.get('title', '')}\n", ("h",))
+                meta = n.get("publisher", "")
+                if n.get("author"):
+                    meta += f" · {n['author']}"
+                meta += f" · {n.get('published', '')}"
+                txt.insert("end", meta + "\n", ("meta",))
+                if n.get("description"):
+                    txt.insert("end", n["description"].strip() + "\n", ("desc",))
+                if n.get("reasoning"):
+                    txt.insert("end", f"Why it matters for {ticker}: {n['reasoning']}\n", ("reason",))
+                url = n.get("url")
+                if url:
+                    linktag = f"link{link_i}"
+                    link_i += 1
+                    txt.insert("end", "Open article ↗", ("link", linktag))
+                    txt.tag_bind(linktag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
+                    txt.tag_bind(linktag, "<Enter>", lambda _e: txt.configure(cursor="hand2"))
+                    txt.tag_bind(linktag, "<Leave>", lambda _e: txt.configure(cursor="arrow"))
+                    txt.insert("end", "\n")
                 txt.insert("end", "\n")
-            txt.insert("end", "\n" + "─" * 70 + "\n\n", ("meta",))
         txt.configure(state="disabled")
 
     def _on_signal_select(self, event) -> None:
@@ -454,8 +494,8 @@ class Dashboard(tk.Tk):
             for name, sig in report["signals"].items():
                 if only and name != only:
                     continue
-                self.breakdown.insert("end", f"\n[{sig['owner']} · {name}]  "
-                                             f"{sig['native_score']} → {sig['native_rating']}\n")
+                self.breakdown.insert("end", f"\n[{name}]  {sig['native_score']} → {sig['rating']}"
+                                             f"   (author's own: {sig['native_rating']})\n")
                 for line in sig.get("breakdown", []):
                     self.breakdown.insert("end", f"   • {line}\n")
         self.breakdown.configure(state="disabled")
@@ -501,8 +541,8 @@ class Dashboard(tk.Tk):
         self.rank_btn.pack(side="left", padx=8)
 
         ttk.Label(parent, padding=(8, 0), foreground="#555",
-                  text="Pick an index/sector or paste tickers. Ranked by the 1-10 composite "
-                       "(top = best to long, bottom = best to short).").pack(fill="x")
+                  text="Pick a sector basket or paste individual equity tickers. Ranked by the "
+                       "1-10 composite (top = best to long, bottom = best to short).").pack(fill="x")
 
         frm = ttk.LabelFrame(parent, text="Ranking", padding=4)
         frm.pack(fill="both", expand=True, padx=8, pady=6)

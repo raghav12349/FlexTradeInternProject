@@ -64,9 +64,13 @@ COMMUNICATION = ["GOOGL", "META", "NFLX", "DIS", "VZ", "T", "TMUS", "CMCSA",
 MEGACAP = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B",
            "LLY", "AVGO"]
 
+# NOTE: market indices (DOW30 / NASDAQ100 / SP500) are intentionally NOT offered
+# as pickable options — the tool analyses individual equities, and an index isn't
+# a single equity. The DOW30/NASDAQ100/SP_SAMPLE lists are kept above only as raw
+# constituent pools. What's exposed below are equity *groupings* (sectors +
+# mega-caps): convenience baskets of individual tickers for the recommender.
 UNIVERSES: dict[str, list[str]] = {
-    # indices
-    "DOW30": DOW30, "NASDAQ100": NASDAQ100, "SP500": SP_SAMPLE, "MEGACAP": MEGACAP,
+    "MEGACAP": MEGACAP,
     # sectors
     "TECH": TECH, "ENERGY": ENERGY, "FINANCE": FINANCE, "HEALTHCARE": HEALTHCARE,
     "CONSUMER": CONSUMER, "STAPLES": STAPLES, "INDUSTRIALS": INDUSTRIALS,

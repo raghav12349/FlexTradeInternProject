@@ -47,18 +47,24 @@ def to_ten(value: float | None, lo: float, hi: float) -> float | None:
 
 
 def ten_to_label(ten: float | None) -> str:
-    """House label for a 1-10 score (used where an author has no own label)."""
+    """Canonical house rating for a 1-10 score.
+
+    This is the SINGLE vocabulary shown to users everywhere (per-signal ratings,
+    composite, recommender), so every factor reads the same way regardless of
+    each author's own wording. Authors' native labels are kept only in the
+    per-signal breakdown for reference.
+    """
     if ten is None:
         return "N/A"
     if ten >= 8.0:
-        return "Strong Buy"
+        return "STRONG BUY"
     if ten >= 6.5:
-        return "Buy"
+        return "BUY"
     if ten >= 4.5:
-        return "Hold"
+        return "HOLD"
     if ten >= 3.0:
-        return "Sell"
-    return "Strong Sell"
+        return "SELL"
+    return "STRONG SELL"
 
 
 def fmt_ten(ten: float | None) -> str:

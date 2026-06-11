@@ -39,7 +39,7 @@ def _breakdown(result: dict) -> list[str]:
 
 def _err_signal(owner: str, label: str, msg: str) -> dict:
     return {"owner": owner, "ten": None, "native_score": "—",
-            "native_rating": label, "breakdown": [msg]}
+            "rating": label, "native_rating": label, "breakdown": [msg]}
 
 
 def _run_one(entry: dict, ticker: str, period: str) -> dict:
@@ -59,6 +59,7 @@ def _run_one(entry: dict, ticker: str, period: str) -> dict:
             "owner": owner,
             "ten": ten,
             "native_score": result.get("native_score") or fmt_ten(ten),
+            "rating": ten_to_label(ten),  # canonical, shown in the UI
             "native_rating": result.get("native_rating") or ten_to_label(ten),
             "breakdown": _breakdown(result),
         }

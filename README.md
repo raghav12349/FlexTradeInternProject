@@ -1,9 +1,13 @@
 # FlexTrade — Multi-Factor Equity Research
 
-Each person's signal (in `modules/`) is run across tickers, shown on a common
-**1–10 scale** with the author's own rating + reasoning, combined into a 1–10
-composite, and surfaced three ways: a terminal breakdown, a CSV export, and a
-branded desktop dashboard with search-by-name and a long/short recommender.
+Each person's signal (in `modules/`) is run on a ticker, put on a common
+**1–10 scale**, labelled with one shared rating vocabulary (**STRONG BUY / BUY /
+HOLD / SELL / STRONG SELL**), and combined into a 1–10 composite. Surfaced three
+ways: a terminal breakdown, a CSV export, and a branded desktop dashboard with
+search-by-name, price/signal charts, a grouped news window, and a long/short
+recommender.
+
+📐 **[How every factor and the composite are calculated → `docs/METHODOLOGY.md`](docs/METHODOLOGY.md)**
 
 ## Setup
 
@@ -55,12 +59,18 @@ author's code and returns it on a common **1–10 scale** (`ten`) plus the
 author's own `native_rating` and a `breakdown`. Authors already on 1–10 pass
 through; others are converted from their native range (anshu −15..21, diya 0–1).
 Insider labels (cosmo's BULLISH/BEARISH/NEUTRAL) map to fixed 1–10 anchors so
-they count in comparisons and the composite. The **composite** is the average of the numeric 1–10
-signals — the same scale the individual signals use — and the recommender ranks
-by it.
+they count in comparisons and the composite. The displayed rating for every
+signal — and the composite — comes from one shared vocabulary derived from the
+1–10 score (each author's own wording is kept in the breakdown). The
+**composite** is the equal-weighted average of the numeric 1–10 signals, and the
+recommender ranks by it. *(Per-factor weighting is planned — see the
+methodology doc.)*
 
 A module that follows `analyze(ticker, period) -> {"score" in [-1,1], ...}`
 natively needs no adapter; the runner converts its score onto 1–10.
+
+Full details of each factor's calculation are in
+**[`docs/METHODOLOGY.md`](docs/METHODOLOGY.md)**.
 
 ## Layout
 
@@ -74,11 +84,13 @@ core/
   runner.py         runs all signals for a ticker; builds the 1-10 composite
   scoring.py        1-10 conversions + labels
   adapters.py       wrappers that put each author's signal on 1-10
-  recommender.py    ranks a universe long -> short by the 1-10 composite
-  universe.py       indices + sector baskets to rank from
+  recommender.py    ranks a basket long -> short by the 1-10 composite
+  universe.py       sector + mega-cap equity baskets to rank from (no indices)
   massive.py        Massive/Polygon REST client
   env.py            auto-loads .keys.env
+docs/METHODOLOGY.md per-factor + composite calculation reference
 ```
 
-> Signals without real logic yet return a placeholder score, so the whole
-> pipeline runs end-to-end. Replace your `analyze` body (or add an adapter) to go live.
+The tool analyses **individual equities**. Market indices (DOW30, NASDAQ100,
+S&P 500) are not selectable inputs — the recommender's presets are baskets of
+individual stocks (sectors, mega-caps).
