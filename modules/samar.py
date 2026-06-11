@@ -1328,17 +1328,30 @@ def scan_best(top_n=10):
     print(f"BEST {n} — ACCELERATING/DIP stocks, ranked by combined z-score")
     print(f"  (out of {len(results)} scored, {len(candidates)} have an ACCELERATING/DIP shape)")
     print(f"{'─'*60}")
-    print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'Cap':<6} {'Zcomb':>6} {'3F':>6} {'Shape':<13} {'Call':<11}")
+    print(f"  {'Rank':<5} {'Ticker':<8} {'Sector':<26} {'Cap':<6} {'Zcomb':>6} {'3F':>6} {'Shape':<13} {'Call':<22}")
     for i, (t, v) in enumerate(candidates[:n], 1):
         sec = all_sectors.get(t, "Unknown")
         cap = cap_tiers.get(t, "?")
         s3  = f"{v['score_3f']:>6.2f}" if v.get("score_3f") is not None else f"{'--':>6}"
-        call = v.get("rec_3f") or (v["recommendation"] + "*")
-        print(f"  {i:<5} {t:<8} {sec:<26} {cap:<6} {v['z_combined']:>6.2f} {s3} {v['shape']:<13} {call:<11}")
+        if v.get("rec_3f"):
+            call = v["rec_3f"]
+        else:
+            has_pe = v.get("pe_ratio") is not None
+            has_pb = v.get("pb_ratio") is not None
+            if not has_pe and not has_pb:
+                missing = "No P/E & P/B"
+            elif not has_pe:
+                missing = "No P/E"
+            elif not has_pb:
+                missing = "No P/B"
+            else:
+                missing = "No Sector Data"
+            call = f"{missing} — Invalid"
+        print(f"  {i:<5} {t:<8} {sec:<26} {cap:<6} {v['z_combined']:>6.2f} {s3} {v['shape']:<13} {call:<22}")
     if candidates:
         print(f"\n  Cap = crude size tier by index membership (Large = S&P500/Nasdaq100, Mid = S&P MidCap 400).")
-        print(f"  3F = 3-factor score (Momentum + P/E + P/B average percentile rank, 1-10 scale); '--' = P/E or P/B data unavailable.")
-        print(f"  Call* = momentum-only recommendation (no P/E/P/B data available for that ticker).")
+        print(f"  3F = 3-factor score (Momentum + P/E + P/B average percentile rank, 1-10 scale).")
+        print(f"  Call shows reason when 3F unavailable: NO P/E = negative/zero earnings; NO P/B = negative equity; NO SECTOR DATA = sector too small.")
 
     if not candidates:
         print("  None found -- no stock in this universe is currently ACCELERATING or DIP.")
