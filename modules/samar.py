@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """
-Dual-Window Momentum Strength Screener (grouped-endpoint version)
+Multi-Window Momentum Strength Screener (grouped-endpoint version)
 ═══════════════════════════════════════════════════════════════════════════
 Choose an index → uses massive.com's GROUPED daily endpoint to pull
-market-wide closing prices for THREE dates only:
+market-wide closing prices for FOUR dates only:
   - ~252 trading days ago  ("12 months ago")
   - ~126 trading days ago  ("6 months ago")
+  - ~63  trading days ago  ("3 months ago")
   - ~21  trading days ago  ("1 month ago", recent month excluded)
 
-That's 3 API calls TOTAL covering the entire US market.
+That's 4 API calls TOTAL covering the entire US market.
 
-Two momentum windows per ticker:
+Three momentum windows per ticker:
   - momentum_12_1 = (price_21 / price_252) - 1
   - momentum_6_1  = (price_21 / price_126) - 1
+  - momentum_3_1  = (price_21 / price_63)  - 1
 
-A stock is only "strong" if BOTH windows agree (both positive, both above
-a floor) -- a stock with a great 12-1 number but a stalled/negative 6-1 had
-its gain front-loaded a year ago and isn't currently strong. This dual-window
-check is a robustness filter on top of the single-window signal.
+A stock is only "strong" if ALL THREE windows agree (all above a z-score
+floor) -- a stock with a great 12-1 number but a stalled/negative 6-1 or 3-1
+had its gain front-loaded a year ago and isn't currently strong. This
+multi-window check is a robustness filter on top of the single-window signal.
 
 Standardization uses MEDIAN / MAD (median absolute deviation), not
 mean/stdev -- robust to single extreme outliers (e.g. a stock with a
 data-quality price discontinuity) without needing an arbitrary hard cutoff.
 
-Combined z-score = min(z_12_1, z_6_1)  -- "as strong as its weakest window".
+Combined z-score = min(z_12_1, z_6_1, z_3_1)  -- "as strong as its weakest window".
 1-10 score = percentile rank of the combined z-score within the index.
 
 Output: prints TOP 10 (or single stock), saves full ranked list to
@@ -317,7 +319,7 @@ def _sic_to_gics(sic):
     return None
 
 
-def get_sector_api(ticker):
+def get_sector_api(ticker, retries=3):
     """GICS-style sector for any ticker via its SEC SIC code. Returns None
     only when the API has no SIC code for the ticker (rare: SPACs, some ADRs).
     Failures are not cached, so a rate-limit blip doesn't stick."""
@@ -333,15 +335,25 @@ def get_sector_api(ticker):
     if ticker in _SECTOR_API_CACHE:
         return _SECTOR_API_CACHE[ticker]
     url = f"{BASE_URL}/v3/reference/tickers/{ticker}?apiKey={API_KEY}"
-    try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            data = json.load(resp)
-        res = data.get("results", {})
-        sic = res.get("sic_code")
-        sector = _sic_to_gics(int(sic)) if sic else None
-        if res.get("market_cap"):
-            _MARKET_CAP_CACHE.setdefault(ticker, res["market_cap"])
-    except Exception:
+    sector = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                data = json.load(resp)
+            res = data.get("results", {})
+            sic = res.get("sic_code")
+            sector = _sic_to_gics(int(sic)) if sic else None
+            if res.get("market_cap"):
+                _MARKET_CAP_CACHE.setdefault(ticker, res["market_cap"])
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+                continue
+            return None
+        except Exception:
+            return None
+    else:
         return None
     _SECTOR_API_CACHE[ticker] = sector
     try:
@@ -355,14 +367,19 @@ def get_sector_api(ticker):
 
 def fill_unknown_sectors(tickers, sectors):
     """Resolve any 'Unknown' sector labels in-place via the SIC fallback.
+    Throttled on cache misses only -- a warm cache costs zero API calls.
     Returns the same dict."""
     unknown = [t for t in tickers if sectors.get(t, "Unknown") == "Unknown"]
     filled = 0
     for t in unknown:
+        cached = (t in _SECTOR_OVERRIDES
+                  or (_SECTOR_API_CACHE is not None and t in _SECTOR_API_CACHE))
         sec = get_sector_api(t)
         if sec:
             sectors[t] = sec
             filled += 1
+        if not cached:
+            time.sleep(0.05)
     if unknown:
         print(f"  Sector fallback (SIC): resolved {filled}/{len(unknown)} unlabeled tickers")
     return sectors
@@ -1536,10 +1553,6 @@ def scan_best(top_n=10):
     if not candidates:
         print("  None found -- no stock in this universe is currently ACCELERATING or DIP.")
         return
-
-
-# Top-level menu options 1-5 map directly to these indexes.
-TOP_MENU_INDEXES = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"}
 
 
 def _run_index_menu(index_key):
