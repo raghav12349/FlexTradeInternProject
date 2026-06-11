@@ -252,6 +252,121 @@ def classify_cap_tier(market_cap):
         return "Mid"
     return "Small"
 
+
+# ── Sector fallback via SIC code ─────────────────────────────────────────────
+# The Wikipedia scrapes only label index constituents, and DIVERSE_UNIVERSE is
+# a hand-labelled list -- any other ticker used to fall through to "Unknown",
+# which kills every sector-relative computation for it. Fallback: pull the SEC
+# SIC code from /v3/reference/tickers/{ticker} (same endpoint as
+# get_market_cap) and map it onto the GICS sector labels the rest of the
+# script uses. Disk-cached, so each ticker costs at most one API call ever.
+SECTOR_CACHE_PATH = os.path.join(HERE, ".cache", "sectors.json")
+_SECTOR_API_CACHE = None
+
+# Ordered SIC ranges -> GICS sector; first match wins, specific ranges first.
+_SIC_TO_GICS = [
+    (2830, 2836, "Health Care"),             # pharma preparations
+    (3841, 3851, "Health Care"),             # surgical/medical instruments
+    (8011, 8099, "Health Care"),             # hospitals & health services
+    (7370, 7379, "Information Technology"),  # software & data processing
+    (3670, 3699, "Information Technology"),  # electronic components
+    (3570, 3579, "Information Technology"),  # computers & office equipment
+    (3661, 3669, "Communication Services"),  # telephone/broadcast equipment
+    (4810, 4899, "Communication Services"),  # telecom services
+    (7800, 7841, "Communication Services"),  # movies & entertainment
+    (4900, 4991, "Utilities"),
+    (6500, 6552, "Real Estate"),
+    (6798, 6798, "Real Estate"),             # REITs
+    (6000, 6411, "Financials"),              # banks, brokers, insurance
+    (6553, 6799, "Financials"),              # holding/investment offices
+    (1311, 1389, "Energy"),                  # oil & gas
+    (2911, 2911, "Energy"),                  # petroleum refining
+    (5400, 5499, "Consumer Staples"),        # food stores
+    (5900, 5963, "Consumer Staples"),        # drug & grocery retail
+    (2000, 2199, "Consumer Staples"),        # food & tobacco manufacturing
+    (2800, 2999, "Materials"),               # chemicals (pharma caught above)
+    (1000, 1499, "Materials"),               # mining
+    (2400, 2499, "Materials"),               # lumber & wood
+    (2600, 2699, "Materials"),               # paper
+    (3300, 3399, "Materials"),               # primary metals
+    (3400, 3499, "Industrials"),             # fabricated metal
+    (3500, 3569, "Industrials"),             # industrial machinery
+    (3700, 3769, "Consumer Discretionary"),  # motor vehicles
+    (5000, 5999, "Consumer Discretionary"),  # retail & wholesale trade
+    (7000, 7399, "Consumer Discretionary"),  # hotels, amusement, services
+    (4000, 4799, "Industrials"),             # transportation
+    (7400, 8999, "Industrials"),             # business & engineering services
+]
+
+# Tickers whose SEC SIC code lands in the wrong GICS sector.
+_SECTOR_OVERRIDES = {
+    "META": "Communication Services", "GOOGL": "Communication Services",
+    "GOOG": "Communication Services", "NFLX": "Communication Services",
+    "DIS":  "Communication Services", "SNAP": "Communication Services",
+    "AMZN": "Consumer Discretionary", "EBAY": "Consumer Discretionary",
+    "V": "Financials", "MA": "Financials", "PYPL": "Financials",
+    "MARA": "Information Technology", "RIOT": "Information Technology",
+    "CLSK": "Information Technology",
+}
+
+
+def _sic_to_gics(sic):
+    for lo, hi, sector in _SIC_TO_GICS:
+        if lo <= sic <= hi:
+            return sector
+    return None
+
+
+def get_sector_api(ticker):
+    """GICS-style sector for any ticker via its SEC SIC code. Returns None
+    only when the API has no SIC code for the ticker (rare: SPACs, some ADRs).
+    Failures are not cached, so a rate-limit blip doesn't stick."""
+    global _SECTOR_API_CACHE
+    if ticker in _SECTOR_OVERRIDES:
+        return _SECTOR_OVERRIDES[ticker]
+    if _SECTOR_API_CACHE is None:
+        try:
+            with open(SECTOR_CACHE_PATH) as f:
+                _SECTOR_API_CACHE = json.load(f)
+        except Exception:
+            _SECTOR_API_CACHE = {}
+    if ticker in _SECTOR_API_CACHE:
+        return _SECTOR_API_CACHE[ticker]
+    url = f"{BASE_URL}/v3/reference/tickers/{ticker}?apiKey={API_KEY}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            data = json.load(resp)
+        res = data.get("results", {})
+        sic = res.get("sic_code")
+        sector = _sic_to_gics(int(sic)) if sic else None
+        if res.get("market_cap"):
+            _MARKET_CAP_CACHE.setdefault(ticker, res["market_cap"])
+    except Exception:
+        return None
+    _SECTOR_API_CACHE[ticker] = sector
+    try:
+        os.makedirs(os.path.dirname(SECTOR_CACHE_PATH), exist_ok=True)
+        with open(SECTOR_CACHE_PATH, "w") as f:
+            json.dump(_SECTOR_API_CACHE, f)
+    except Exception:
+        pass
+    return sector
+
+
+def fill_unknown_sectors(tickers, sectors):
+    """Resolve any 'Unknown' sector labels in-place via the SIC fallback.
+    Returns the same dict."""
+    unknown = [t for t in tickers if sectors.get(t, "Unknown") == "Unknown"]
+    filled = 0
+    for t in unknown:
+        sec = get_sector_api(t)
+        if sec:
+            sectors[t] = sec
+            filled += 1
+    if unknown:
+        print(f"  Sector fallback (SIC): resolved {filled}/{len(unknown)} unlabeled tickers")
+    return sectors
+
 _CAP_TIER_CACHE = None
 
 def build_cap_tiers():
@@ -1035,6 +1150,53 @@ def add_value_scores(tickers, snap, sectors, results):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+def _extra_value_scores(ticker, v, sector, results, sectors):
+    """Sector-relative value z-scores + 3F score for a ticker scored against
+    a universe it isn't part of. Mirrors _score_extra_ticker's rank-insertion
+    approach: builds the sector's median/MAD and the 3-factor percentile
+    ranks from the universe's results, then slots this ticker in without
+    folding it into the distribution."""
+    members = [t for t, s in sectors.items()
+               if s == sector and t != ticker and t in results]
+
+    def _value_z(key):
+        raw = v.get(key)
+        if raw is None:
+            return None
+        vals = [results[t][key] for t in members if results[t].get(key) is not None]
+        if len(vals) < SECTOR_MIN_GROUP:
+            return None
+        med, mad = _med_mad(vals)
+        if mad == 0:
+            return None
+        return -((raw - med) / mad)
+
+    v["pe_z"] = _value_z("pe_ratio")
+    v["pb_z"] = _value_z("pb_ratio")
+
+    secz = v.get("z_combined_sector")
+    if secz is None or v["pe_z"] is None or v["pb_z"] is None:
+        v["score_3f"] = v["rec_3f"] = None
+        return
+    common3 = [t for t in results
+               if results[t].get("z_combined_sector") is not None
+               and results[t].get("pe_z") is not None
+               and results[t].get("pb_z") is not None]
+    if len(common3) < SECTOR_MIN_GROUP:
+        v["score_3f"] = v["rec_3f"] = None
+        return
+
+    def _pct(key, val):
+        vals = [results[t][key] for t in common3]
+        return sum(1 for x in vals if x <= val) / len(vals)
+
+    comb = (_pct("z_combined_sector", secz)
+            + _pct("pe_z", v["pe_z"])
+            + _pct("pb_z", v["pb_z"])) / 3
+    v["score_3f"] = round(1 + comb * 9, 2)
+    v["rec_3f"] = _rec_3f(v["score_3f"], v.get("is_strong", False))
+
+
 def run(index_key):
     tickers, index_name, sectors = get_constituents(index_key)
     short_code = INDEXES[index_key][2]
@@ -1047,6 +1209,7 @@ def run(index_key):
     momentum_dict, excluded = compute_momentum(tickers, snap)
     print(f"  {len(momentum_dict)} stocks with valid data")
 
+    fill_unknown_sectors(tickers, sectors)
     results, stats = standardize(momentum_dict, sectors, build_cap_tiers())
     n_strong = sum(1 for v in results.values() if v["is_strong"])
     print(f"  Index 12-1 median: {stats['med12']*100:+.2f}%  MAD: {stats['mad12']*100:.2f}%")
@@ -1177,7 +1340,17 @@ def _print_single_result(ticker, v, sectors, cap_tiers, header):
     if v.get("score_3f") is not None:
         print(f"  3-Factor Score: {v['score_3f']:.2f}/10  →  {v['rec_3f']}")
     else:
-        print(f"  3-Factor Score: --  (P/E or P/B unavailable for this ticker)")
+        has_pe = v.get("pe_ratio") is not None
+        has_pb = v.get("pb_ratio") is not None
+        if not has_pe and not has_pb:
+            missing = "No P/E & P/B"
+        elif not has_pe:
+            missing = "No P/E"
+        elif not has_pb:
+            missing = "No P/B"
+        else:
+            missing = "No Sector Data"
+        print(f"  3-Factor Score: --  ({missing} — Invalid)")
 
 
 def run_single(ticker, index_key):
@@ -1194,6 +1367,7 @@ def run_single(ticker, index_key):
     snap = get_market_snapshots()
     momentum_dict, _ = compute_momentum(tickers, snap)
     cap_tiers = build_cap_tiers()
+    fill_unknown_sectors(tickers, sectors)
     results, stats = standardize(momentum_dict, sectors, cap_tiers)
     add_value_scores(tickers, snap, sectors, results)
 
@@ -1207,14 +1381,16 @@ def run_single(ticker, index_key):
         if ticker not in extra:
             print(f"\n  {ticker}: no valid data (missing price or suspect move).")
             return
+        sec = sectors.get(ticker, "Unknown")
+        if sec == "Unknown":
+            sec = get_sector_api(ticker) or "Unknown"
+        sectors = {**sectors, ticker: sec}
         v = _score_extra_ticker(ticker, extra[ticker], momentum_dict, results, stats, sectors, cap_tiers)
-        # Add raw P/E and P/B for display — z-scores and 3F score not computed
-        # since ranking requires the ticker to be part of the universe distribution.
         extra_filings = _fetch_financials(ticker)
         extra_price = snap["p21"].get(ticker)
         v["pe_ratio"] = _pe_ratio(extra_filings, extra_price)
         v["pb_ratio"] = _pb_ratio(extra_filings, extra_price)
-        v["pe_z"] = v["pb_z"] = v["score_3f"] = v["rec_3f"] = None
+        _extra_value_scores(ticker, v, sec, results, sectors)
         print(f"\n  Note: {ticker} is not a constituent of {index_name} -- "
               f"scored against the index's distribution, not included in it.")
 
@@ -1242,6 +1418,7 @@ def run_vs_diverse(ticker):
     results, stats = standardize(momentum_dict, DIVERSE_UNIVERSE, cap_tiers)
     add_value_scores(universe, snap, DIVERSE_UNIVERSE, results)
 
+    sectors_x = dict(DIVERSE_UNIVERSE)
     if in_universe:
         if ticker not in results:
             print(f"\n  {ticker}: no valid data (missing price or suspect move).")
@@ -1252,16 +1429,18 @@ def run_vs_diverse(ticker):
         if ticker not in extra:
             print(f"\n  {ticker}: no valid data (missing price or suspect move).")
             return
-        v = _score_extra_ticker(ticker, extra[ticker], momentum_dict, results, stats, DIVERSE_UNIVERSE, cap_tiers)
+        sec = get_sector_api(ticker) or "Unknown"
+        sectors_x[ticker] = sec
+        v = _score_extra_ticker(ticker, extra[ticker], momentum_dict, results, stats, sectors_x, cap_tiers)
         extra_filings = _fetch_financials(ticker)
         extra_price = snap["p21"].get(ticker)
         v["pe_ratio"] = _pe_ratio(extra_filings, extra_price)
         v["pb_ratio"] = _pb_ratio(extra_filings, extra_price)
-        v["pe_z"] = v["pb_z"] = v["score_3f"] = v["rec_3f"] = None
+        _extra_value_scores(ticker, v, sec, results, sectors_x)
         print(f"\n  Note: {ticker} is not part of the diverse universe -- "
               f"scored against it, not included in it.")
 
-    _print_single_result(ticker, v, DIVERSE_UNIVERSE, cap_tiers,
+    _print_single_result(ticker, v, sectors_x, cap_tiers,
                           f"{ticker} — Multi-Window Momentum vs Diverse {len(universe)}-Stock Universe")
 
 
@@ -1315,6 +1494,7 @@ def scan_best(top_n=10):
     momentum_dict, excluded = compute_momentum(universe, snap)
     print(f"  {len(momentum_dict)} stocks with valid data")
 
+    fill_unknown_sectors(universe, all_sectors)
     results, stats = standardize(momentum_dict, all_sectors, cap_tiers)
     add_value_scores(universe, snap, all_sectors, results)
 
