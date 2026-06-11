@@ -21,7 +21,11 @@ import json
 
 import requests
 
+
+# ===============editable API Key=======================================================
+MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "YOUR_API_KEY_HERE")
 BASE_URL = "https://api.massive.com"
+
 HEADERS = {"Authorization": f"Bearer {MASSIVE_API_KEY}"}
 
 # Endpoint paths for each statement we need.
@@ -147,6 +151,29 @@ def _index_by_fiscal_year(results):
     return indexed
 
 
+# Threshold: if current liabilities are less than this fraction of total
+# liabilities, the company is treated as a financial-sector firm whose
+# balance sheet structure makes OCF/FCF ratios meaningless.
+_FINANCIAL_CL_RATIO_THRESHOLD = 0.10
+
+
+def _is_financial_sector(balance_by_year):
+    """Return True if the balance sheet looks like a bank/insurer/financial.
+
+    Banks carry most liabilities as deposits and long-term debt, so their
+    current liabilities are a tiny slice (< 10 %) of total liabilities.
+    For non-financials the split is typically 30–60 %.  We check the most
+    recent year with both fields populated.
+    """
+    for year in sorted(balance_by_year, reverse=True):
+        bs = balance_by_year[year]
+        cur  = bs.get("total_current_liabilities")
+        tot  = bs.get("total_liabilities")
+        if cur is not None and tot and tot > 0:
+            return (cur / tot) < _FINANCIAL_CL_RATIO_THRESHOLD
+    return False
+
+
 def _describe(ticker, signal, ocf_value, fcf_value, ocf_band, fcf_band,
               operational_score, financial_score):
     """Company-specific plain-English description of the liquidity signal.
@@ -160,6 +187,13 @@ def _describe(ticker, signal, ocf_value, fcf_value, ocf_band, fcf_band,
     WATCH / WEAK conclusions are case-specific (operational drag, financial
     drag, or both). NO_DATA returns a short fallback with no ratio lines.
     """
+    # NOT_APPLICABLE: financial-sector company — framework doesn't apply.
+    if signal == "NOT_APPLICABLE":
+        return (f"{ticker} is a financial-sector company (bank, insurer, or "
+                "similar). The OCF/FCF liquidity framework is not applicable "
+                "to firms whose balance sheets are dominated by deposits and "
+                "long-term debt rather than operational current liabilities.")
+
     # NO_DATA: no ratio values exist, skip the opening and ratio lines.
     if signal == "NO_DATA" or ocf_value is None or fcf_value is None:
         return (f"{ticker}: insufficient annual filings to assess liquidity "
@@ -244,33 +278,7 @@ def _summarise(detail, save_detail, detail_dir):
 # Main entry point
 # ======================================================================
 def liquidity_analysis(ticker, start_date, end_date, save_detail=True, detail_dir="."):
-    """Score a stock's liquidity over an explicit date range.
-
-    Parameters
-    ----------
-    ticker : str
-        Stock ticker, e.g. "AAPL".
-    start_date, end_date : str
-        Inclusive date range in "YYYY-MM-DD" format. All annual filings whose
-        `period_end` falls in this range are used and their ratios averaged.
-    save_detail : bool, default True
-        If True, the full breakdown (raw inputs per year, the per-statement
-        figures used, and any warnings) is written to a JSON file so nothing is
-        lost. Set False when calling in bulk to avoid writing lots of files.
-    detail_dir : str, default "."
-        Folder the detail JSON is written to (created if needed).
-
-    Returns
-    -------
-    dict
-        Compact result with ONLY:
-          - "signal"            STRONG / ADEQUATE / WATCH / WEAK (or "NO_DATA")
-          - "description"       one-sentence plain-English reading of the signal
-          - "composite_score"   final 0-1 liquidity score
-          - "operational_score" normalised OCF sub-score (the 0.4 weight part)
-          - "financial_score"   normalised FCF sub-score (the 0.6 weight part)
-        The full breakdown is saved to disk (see `save_detail`), not returned.
-    """
+    
     ticker = ticker.upper()
     warnings = []
 
@@ -278,6 +286,33 @@ def liquidity_analysis(ticker, start_date, end_date, save_detail=True, detail_di
     cash_flow = _index_by_fiscal_year(_fetch(CASH_FLOW_ENDPOINT, ticker, start_date, end_date))
     income = _index_by_fiscal_year(_fetch(INCOME_ENDPOINT, ticker, start_date, end_date))
     balance = _index_by_fiscal_year(_fetch(BALANCE_SHEET_ENDPOINT, ticker, start_date, end_date))
+
+    # --- 1a. Financial-sector early exit -----------------------------------
+    # Banks, insurers, and other financials have balance sheets where current
+    # liabilities are a tiny fraction of total liabilities (deposits and long-
+    # term debt dominate).  The OCF ratio and FCF coverage formulas produce
+    # misleading numbers for these firms, so we return NOT_APPLICABLE rather
+    # than a score that looks real but isn't comparable to other sectors.
+    if balance and _is_financial_sector(balance):
+        detail = {
+            "ticker": ticker,
+            "period": {"start": start_date, "end": end_date},
+            "signal": "NOT_APPLICABLE",
+            "liquidity_score": None,
+            "operational_score": None,
+            "financial_score": None,
+            "ocf_ratio": None,
+            "fcf_coverage": None,
+            "years_used": [],
+            "inputs": {},
+            "warnings": [
+                "Financial-sector company detected. The OCF/FCF liquidity "
+                "framework requires meaningful current liabilities as a "
+                "denominator, which banks and insurers do not report in a "
+                "comparable way. No score is produced."
+            ],
+        }
+        return _summarise(detail, save_detail, detail_dir)
 
     # We can only compute ratios for years present in ALL three statements.
     common_years = sorted(set(cash_flow) & set(income) & set(balance))
