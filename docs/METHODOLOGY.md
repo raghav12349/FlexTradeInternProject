@@ -190,21 +190,40 @@ scoring logic**, and the **range it lands on**.
 
 ---
 
-## 5. The composite index
+## 5. The composite index — weighted
+
+The composite is a **weighted average** of the available 1–10 signals
+(`core/weights.py`, `core/runner.py`):
 
 ```
-composite = mean( ten for every signal that produced a usable score )   # 1 dp
+composite = Σ (tenᵢ × weightᵢ) / Σ weightᵢ        # over signals that scored, 1 dp
 ```
 
-- A plain **equal-weighted average** of the available 1–10 signals.
-- Errored / timed-out / no-data signals are **left out** (they don't pull it
-  toward the middle). `n_scored` reports how many contributed.
+- Each factor contributes in proportion to its weight (table below).
+- Errored / timed-out / no-data signals are **dropped** and the denominator
+  shrinks (weights renormalise over what's available), so a missing signal never
+  distorts the result. `n_scored` reports how many contributed.
 - The composite gets the house rating from §3.
 
-Worked example (AAPL, illustrative): `momentum 6.9, macd 3.2, rsi 5.8, sma 6.4,
-ema 6.4, short_volume 4.7, ratios 6.0, dividends 7.6, short_interest 6.4,
-insider 5.0, liquidity 8.6, sma_crossover 10.0, news 5.1` → mean ≈ **6.3** →
-**HOLD**.
+**Weights** (from the *Ultra Composite Index* scheme in `COMPOSITE_INDEX.md`):
+
+| Signal | Weight | | Signal | Weight |
+|---|---|---|---|---|
+| `sma` | 12% | | `macd` | 8% |
+| `ratios` | 12% | | `news` | 8% |
+| `ema` | 10% | | `short_volume` | 8% |
+| `rsi` | 9% | | `insider` | 7% |
+| `momentum` | 9% | | `liquidity` | 7% |
+| `dividends` | 5% | | `sma_crossover` | 5% |
+
+Any registered signal not in the table (e.g. `short_interest` / anshu2) uses a
+default weight of **5%**. Rationale for each weight is documented in
+`COMPOSITE_INDEX.md`.
+
+Worked example (AAPL, illustrative): with `sma 6.4 (12%)`, `ratios 6.0 (12%)`,
+`liquidity 8.6 (7%)`, `macd 3.2 (8%)`, `sma_crossover 10.0 (5%)`, … the
+weighted average ≈ **6.2** → **HOLD** (vs. ≈ 6.4 if equal-weighted — the lower
+weights on the strongest outliers pull it down slightly).
 
 ---
 
@@ -222,14 +241,17 @@ baskets if offline.
 
 ---
 
-## 7. Weighting (future work)
+## 7. Weighting
 
-The composite is currently an **equal-weighted** mean — every scored factor
-counts the same; a deliberate v1 simplification. The planned next step is a
-**per-factor weight map** applied in the composite step
-(`Σ wᵢ·tenᵢ / Σ wᵢ` instead of a plain mean), so high-conviction or
-higher-confidence factors can count more, and stale/low-confidence inputs can be
-down-weighted. Not implemented yet — this document will be updated when it lands.
+Implemented (§5): the composite is a **weighted** average using the weights in
+`core/weights.py`, renormalised over whichever signals scored. To change the
+scheme, edit `COMPOSITE_WEIGHTS` (or `DEFAULT_WEIGHT` for unlisted signals) —
+the runner, recommender, dashboard and terminal all read from it. The full
+rationale for each weight (with academic references) is in `COMPOSITE_INDEX.md`.
+
+Not yet implemented from that scheme: the **multi-gate filter** (eight
+pass/fail conditions that can downgrade a Buy to Hold). Only the weighting is
+wired in so far.
 
 ---
 

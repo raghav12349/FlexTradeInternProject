@@ -515,12 +515,16 @@ class Dashboard(tk.Tk):
         self.breakdown.configure(state="normal")
         self.breakdown.delete("1.0", "end")
         if report:
-            self.breakdown.insert("end", f"{report['ticker']}\n")
+            comp = report["composite"]
+            comp_str = f"{comp:.1f}/10 ({report['composite_label']})" if is_scored(comp) else "—"
+            self.breakdown.insert("end", f"{report['ticker']} — weighted composite {comp_str}  "
+                                         f"(Σ weight×score ÷ Σ weight, over scored signals)\n")
             for name, sig in report["signals"].items():
                 if only and name != only:
                     continue
+                wpct = round(sig.get("weight", 0) * 100)
                 self.breakdown.insert("end", f"\n[{name}]  {sig['native_score']} → "
-                                             f"{sig['native_rating']}\n", ("sig",))
+                                             f"{sig['native_rating']}   ·   weight {wpct}%\n", ("sig",))
                 how = signal_description(name)
                 if how:
                     self.breakdown.insert("end", f"How it's computed: {how}\n", ("how",))

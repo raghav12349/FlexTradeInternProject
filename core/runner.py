@@ -18,6 +18,7 @@ import pandas as pd
 
 from core.registry import load_signals
 from core.scoring import fmt_ten, is_scored, ten_to_label, to_ten
+from core.weights import weight_for
 
 _SIGNAL_TIMEOUT = 45      # seconds per signal before it's marked timed-out
 _CACHE: dict[tuple, dict] = {}
@@ -90,14 +91,25 @@ def analyze_ticker(ticker: str, period: str = "2y", use_cache: bool = True) -> d
                 signals[e["name"]] = _err_signal(e["owner"], "timeout", "signal timed out")
         ex.shutdown(wait=False, cancel_futures=True)
 
-    tens = [s["ten"] for s in signals.values() if is_scored(s["ten"])]
-    composite = round(sum(tens) / len(tens), 1) if tens else None
+    # Weighted composite: each scored signal contributes in proportion to its
+    # weight, renormalised over only the signals that produced a score
+    # (Σ wᵢ·tenᵢ / Σ wᵢ), so a missing signal never distorts the result.
+    num = den = 0.0
+    n_scored = 0
+    for name, sig in signals.items():
+        w = weight_for(name)
+        sig["weight"] = w
+        if is_scored(sig["ten"]):
+            num += sig["ten"] * w
+            den += w
+            n_scored += 1
+    composite = round(num / den, 1) if den else None
     report = {
         "ticker": ticker.upper(),
         "signals": signals,
         "composite": composite,
         "composite_label": ten_to_label(composite),
-        "n_scored": len(tens),
+        "n_scored": n_scored,
     }
     _CACHE[cache_key] = report
     return report

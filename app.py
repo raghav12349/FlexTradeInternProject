@@ -29,14 +29,15 @@ from core.universe import resolve
 def print_report(report: dict) -> None:
     """Pretty-print one ticker's per-signal ratings, then how each was computed."""
     print(f"\n=== {report['ticker']} ===")
-    print(f"{'signal':<18}{'score':>10}   rating (author's own)")
-    print("-" * 56)
+    print(f"{'signal':<18}{'score':>10}{'weight':>8}   rating (author's own)")
+    print("-" * 64)
     for name, sig in report["signals"].items():
-        print(f"{name:<18}{sig['native_score']:>10}   {sig['native_rating']}")
-    print("-" * 56)
+        wpct = f"{round(sig.get('weight', 0) * 100)}%"
+        print(f"{name:<18}{sig['native_score']:>10}{wpct:>8}   {sig['native_rating']}")
+    print("-" * 64)
     comp = report["composite"]
     comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
-    print(f"{'COMPOSITE (avg of ' + str(report['n_scored']) + ' signals)':<25}{comp_str:>10}   {report['composite_label']}  (house rating)")
+    print(f"{'WEIGHTED COMPOSITE (' + str(report['n_scored']) + ' signals)':<28}{comp_str:>10}{'':>8}   {report['composite_label']}  (house rating)")
 
     print("\n── How each rating was computed ──")
     for name, sig in report["signals"].items():
