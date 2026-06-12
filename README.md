@@ -1,4 +1,4 @@
-# FlexTrade — Multi-Factor Equity Research
+# FlexTrade - Multi-Factor Equity Research
 
 Each person's signal (in `modules/`) is run on a ticker, put on a common
 **1–10 scale**, labelled with one shared rating vocabulary (**STRONG BUY / BUY /
