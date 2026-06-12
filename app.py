@@ -22,7 +22,7 @@ import argparse
 from core.env import load_local_keys
 from core.recommender import rank
 from core.runner import analyze_ticker, export_csv, run
-from core.scoring import is_scored, signal_description
+from core.scoring import display_name, is_scored, signal_description
 from core.universe import resolve
 
 
@@ -33,7 +33,7 @@ def print_report(report: dict) -> None:
     print("-" * 64)
     for name, sig in report["signals"].items():
         wpct = f"{round(sig.get('weight', 0) * 100)}%"
-        print(f"{name:<18}{sig['native_score']:>10}{wpct:>8}   {sig['native_rating']}")
+        print(f"{display_name(name):<18}{sig['native_score']:>10}{wpct:>8}   {sig['native_rating']}")
     print("-" * 64)
     comp = report["composite"]
     comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
@@ -41,7 +41,7 @@ def print_report(report: dict) -> None:
 
     print("\n── How each rating was computed ──")
     for name, sig in report["signals"].items():
-        print(f"\n[{name}] → {sig['native_rating']}")
+        print(f"\n[{display_name(name)}] → {sig['native_rating']}")
         how = signal_description(name)
         if how:
             print(f"   How it's computed: {how}")

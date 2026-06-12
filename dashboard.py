@@ -23,7 +23,8 @@ from core.env import load_local_keys
 from core.recommender import rank
 from core.registry import signal_specs
 from core.runner import analyze_ticker, export_csv
-from core.scoring import fmt_ten, is_scored, signal_description
+from core.scoring import (display_name, fmt_ten, is_scored, signal_description,
+                          signal_plain)
 from core.universe import available, resolve
 
 PERIODS = ["6mo", "1y", "2y", "5y"]
@@ -180,6 +181,10 @@ class Dashboard(tk.Tk):
         self.fig.tight_layout(pad=2.0)
         self.canvas = FigureCanvasTkAgg(self.fig, master=charts_tab)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        # Force the first render now, on the main thread, so matplotlib builds its
+        # font cache here rather than lazily during a threaded Analyze — the latter
+        # collides with Tk's GIL handling and fatally crashes on macOS/Tk 9.0.
+        self.canvas.draw()
 
         cont = ttk.Frame(signals_tab, padding=4)
         cont.pack(fill="x")
@@ -190,20 +195,24 @@ class Dashboard(tk.Tk):
         for cat in cats:
             panel = ttk.LabelFrame(cont, text=cat, padding=4)
             panel.pack(side="left", fill="both", expand=True, padx=3)
-            tree = ttk.Treeview(panel, columns=("score", "rating"),
+            tree = ttk.Treeview(panel, columns=("score", "rating", "info"),
                                 show="tree headings", height=5)
             tree.heading("#0", text="Signal")
             tree.heading("score", text="Score")
             tree.heading("rating", text="Rating")
+            tree.heading("info", text="Info")
             tree.column("#0", width=124)
-            tree.column("score", width=64, anchor="center")
-            tree.column("rating", width=112, anchor="center")
+            tree.column("score", width=58, anchor="center")
+            tree.column("rating", width=104, anchor="center")
+            tree.column("info", width=34, anchor="center")
             tree.pack(fill="both", expand=True)
             tree.bind("<<TreeviewSelect>>", self._on_signal_select)
+            # Click the ⓘ cell to pop a plain-English explanation of the signal.
+            tree.bind("<Button-1>", self._on_signal_click)
             for s in self.specs:
                 if s["category"] == cat:
-                    tree.insert("", "end", iid=s["name"], text=s["name"],
-                                values=("—", "—"))
+                    tree.insert("", "end", iid=s["name"], text=display_name(s["name"]),
+                                values=("—", "—", "ⓘ"))
             self.category_trees[cat] = tree
 
         bd = ttk.LabelFrame(signals_tab, text="How each rating was computed (click a signal)", padding=4)
@@ -223,7 +232,7 @@ class Dashboard(tk.Tk):
         cols = ["Ticker", *self.signal_names, "Composite", "Rating"]
         self.table = ttk.Treeview(tb, columns=cols, show="headings", height=4)
         for c in cols:
-            self.table.heading(c, text=c)
+            self.table.heading(c, text=display_name(c))
             self.table.column(c, width=78, anchor="center")
         self.table.column("Ticker", width=64, anchor="w")
         xb = ttk.Scrollbar(tb, orient="horizontal", command=self.table.xview)
@@ -331,7 +340,7 @@ class Dashboard(tk.Tk):
                     continue
                 sig = report["signals"].get(s["name"], {})
                 tree.item(s["name"], values=(sig.get("native_score", "—"),
-                                             sig.get("native_rating", "—")))
+                                             sig.get("native_rating", "—"), "ⓘ"))
         comp = report["composite"]
         comp_str = f"{comp:.1f}/10" if is_scored(comp) else "—"
         self.composite_var.set(f"Composite: {comp_str} ({report['composite_label']})")
@@ -510,6 +519,33 @@ class Dashboard(tk.Tk):
         if sel:
             self._render_breakdown(only=sel[0])
 
+    def _on_signal_click(self, event) -> None:
+        """Pop a plain-English explanation when the ⓘ (info) cell is clicked."""
+        tree = event.widget
+        if tree.identify("region", event.x, event.y) != "cell":
+            return
+        if tree.identify_column(event.x) != "#3":   # #0 tree, #1 score, #2 rating, #3 info
+            return
+        name = tree.identify_row(event.y)
+        if name:
+            self._show_signal_info(name)
+
+    def _show_signal_info(self, name: str) -> None:
+        """Small popup: what this signal is, in retail-investor terms."""
+        title = display_name(name)
+        text = signal_plain(name) or signal_description(name) or "No description available."
+        win = tk.Toplevel(self)
+        win.title(f"What is “{title}”?")
+        win.geometry("460x230")
+        win.transient(self)
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text=title, font=("Helvetica", 15, "bold")).pack(anchor="w")
+        ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(6, 8))
+        tk.Message(frm, text=text, width=420, font=("Helvetica", 11),
+                   justify="left").pack(anchor="w", fill="both", expand=True)
+        ttk.Button(frm, text="Close", command=win.destroy).pack(anchor="e", pady=(8, 0))
+
     def _render_breakdown(self, only: str | None = None) -> None:
         report = self.last_report
         self.breakdown.configure(state="normal")
@@ -523,7 +559,7 @@ class Dashboard(tk.Tk):
                 if only and name != only:
                     continue
                 wpct = round(sig.get("weight", 0) * 100)
-                self.breakdown.insert("end", f"\n[{name}]  {sig['native_score']} → "
+                self.breakdown.insert("end", f"\n[{display_name(name)}]  {sig['native_score']} → "
                                              f"{sig['native_rating']}   ·   weight {wpct}%\n", ("sig",))
                 how = signal_description(name)
                 if how:
@@ -582,12 +618,14 @@ class Dashboard(tk.Tk):
         cols = ["Rank", "Ticker", *self.signal_names, "Composite", "Rating", "Call"]
         self.rec_table = ttk.Treeview(frm, columns=cols, show="headings", height=20)
         for c in cols:
-            self.rec_table.heading(c, text=c)
+            self.rec_table.heading(c, text=display_name(c))
             self.rec_table.column(c, width=74, anchor="center")
         self.rec_table.column("Rank", width=40)
         self.rec_table.column("Ticker", width=60, anchor="w")
-        self.rec_table.tag_configure("Long", background="#d6f5d6")
-        self.rec_table.tag_configure("Short", background="#f9d6d6")
+        # High-contrast highlights (no green — easier to read / colour-blind safe):
+        # Long  = white text on black, Short = white text on dark red.
+        self.rec_table.tag_configure("Long", background="#111111", foreground="#ffffff")
+        self.rec_table.tag_configure("Short", background="#8a1414", foreground="#ffffff")
         yb = ttk.Scrollbar(frm, orient="vertical", command=self.rec_table.yview)
         xb = ttk.Scrollbar(frm, orient="horizontal", command=self.rec_table.xview)
         self.rec_table.configure(yscrollcommand=yb.set, xscrollcommand=xb.set)
@@ -652,6 +690,13 @@ class Dashboard(tk.Tk):
 
 def main() -> None:
     load_local_keys()
+    # Build matplotlib's font cache up front, single-threaded, before the Tk
+    # mainloop and any analysis worker thread exist. Doing it lazily mid-analysis
+    # crashes hard on macOS/Tk 9.0 (GIL released inside mainloop).
+    import matplotlib
+    matplotlib.use("TkAgg")
+    from matplotlib import font_manager
+    _ = font_manager.fontManager.ttflist
     Dashboard().mainloop()
 
 

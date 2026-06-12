@@ -64,6 +64,79 @@ SIGNAL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# User-facing display label per signal. Internal keys stay stable (weights,
+# caching, CSV columns, composite math all key off the original name); this only
+# changes what the human reads. Unlisted signals show their plain name.
+DISPLAY_NAMES: dict[str, str] = {
+    "liquidity": "Cash Position",
+}
+
+
+def display_name(name: str) -> str:
+    """User-facing label for a signal; internal key is unchanged."""
+    return DISPLAY_NAMES.get(name, name)
+
+
+# Plain-English, 2-3 line explanations for retail investors, shown in the little
+# "ⓘ" info popup next to each signal. Deliberately jargon-light: what it looks at
+# and what a higher score means. Keyed by the internal signal name.
+SIGNAL_PLAIN: dict[str, str] = {
+    "momentum": ("Blends three checks, each compared to other companies in the "
+                 "same sector: (1) has the stock been climbing faster than its "
+                 "peers over recent months, (2) is it still fairly priced for the "
+                 "profits it earns (not too expensive vs earnings), and (3) is it "
+                 "fairly priced versus what the company actually owns (its net "
+                 "assets). Higher = real momentum in a stock you're not "
+                 "overpaying for."),
+    "macd": ("A trend gauge that compares the stock's short-term and longer-term "
+             "average prices to see if upward momentum is building or fading. "
+             "Higher = momentum is turning up."),
+    "rsi": ("Tells you if a stock has run up too fast (overbought) or been sold "
+            "off too hard (oversold) recently — a timing tool, since oversold "
+            "stocks can bounce. Higher = more favourably positioned to rise."),
+    "sma": ("Checks the price against its 20-, 50- and 200-day average prices. "
+            "When price sits above its long-term averages and they line up "
+            "upward, the trend is healthy. Higher = stronger uptrend."),
+    "ema": ("Same trend check as the moving averages, but it weights recent "
+            "prices more so it reacts faster. Higher = price is holding above "
+            "its trend with momentum behind it."),
+    "short_volume": ("Looks at how much recent trading was short-selling (bets "
+                     "the stock falls). Rising short activity is bearish, fading "
+                     "is bullish. Higher = less downward pressure from shorts."),
+    "ratios": ("A company-health check using fundamentals — profitability, debt, "
+               "margins, cash flow and how cheap or expensive the stock is — "
+               "compared to what's normal for its sector. Higher = financially "
+               "stronger and more reasonably priced."),
+    "dividends": ("Looks at the dividend track record: is it paid consistently, "
+                  "growing, and affordable for the company? Reliable, growing "
+                  "dividends signal a stable business. Companies that pay none "
+                  "are treated as neutral."),
+    "short_interest": ("How heavily traders overall are betting against the stock. "
+                       "Heavy or rising bets against it are bearish; light or "
+                       "falling is bullish. Higher = less negative positioning."),
+    "insider": ("Tracks buying and selling by the company's own executives (their "
+                "official Form 4 filings). Insiders buying is a confidence signal; "
+                "selling is weighed more lightly. Higher = insiders leaning "
+                "bullish."),
+    "liquidity": ("Measures whether the company makes enough cash to cover its "
+                  "short-term bills — its operating and free cash flow versus what "
+                  "it owes soon. Higher = a stronger cash cushion and less "
+                  "financial stress."),
+    "sma_crossover": ("A simple trend confirmation: is the 20-day average price "
+                      "above the 50-day? Fast-above-slow means short-term momentum "
+                      "is beating the medium-term trend. Higher = bullish "
+                      "crossover."),
+    "news": ("Reads recent news articles about the company and scores their tone "
+             "as positive, neutral or negative. More upbeat coverage nudges the "
+             "score up. Higher = friendlier recent news."),
+}
+
+
+def signal_plain(name: str) -> str | None:
+    """Retail-friendly, plain-English explanation of what a signal is."""
+    return SIGNAL_PLAIN.get(name)
+
+
 def signal_description(name: str) -> str | None:
     """Plain-English description of how a signal's rating is computed."""
     return SIGNAL_DESCRIPTIONS.get(name)
