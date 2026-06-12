@@ -83,20 +83,22 @@ scoring logic**, and the **range it lands on**.
 ### Technicals
 
 **`momentum` — 3-factor momentum + value (samar)**
+- **Reference universe:** samar's curated **~110-stock sector-diverse universe**
+  (`DIVERSE_UNIVERSE`) — matching samar's `run_vs_diverse` mode, so the
+  dashboard score equals what samar prints standalone.
 - **Momentum inputs:** trailing returns → **12-1**, **6-1**, **3-1** month
-  momentum, each standardized to a robust **z-score** (median/MAD) across the
-  **S&P 500**; `z_combined = min(z₃, z₆, z₁₂)` (credit only if *all three*
-  windows are strong). The sector-relative version is `z_combined_sector`.
-- **Value inputs:** **P/E** and **P/B** for every S&P 500 name, each turned into
-  a **sector-relative z-score** (cheap stock vs its sector peers).
+  momentum, each standardized to a robust **z-score** (median/MAD) across that
+  universe; `z_combined = min(z₃, z₆, z₁₂)` (credit only if *all three* windows
+  are strong). The sector-relative version is `z_combined_sector`.
+- **Value inputs:** **P/E** and **P/B** for every name, each turned into a
+  **sector-relative z-score** (cheap vs its sector peers).
 - **Headline score (`score_3f`)** = the average **percentile rank** of three
-  factors — sector-momentum z, P/E z, and P/B z — scaled to 1–10. So a name with
-  great momentum but an expensive valuation (high P/E / P/B) is pulled toward the
-  middle (e.g. NVDA: momentum-only ≈ 9.4, but 3-factor ≈ 5.5). This is the score
-  samar shows standalone (`run_single` vs S&P 500, menu option 1).
-- If a name has no P/E or P/B data, the signal falls back to the
-  **momentum-only** percentile. Reference index is configurable via
-  `_SAMAR_INDEX_KEY` in `core/adapters.py`.
+  factors — sector-momentum z, P/E z, and P/B z — scaled to 1–10. A name with
+  great momentum but an expensive valuation is pulled toward/below the middle
+  (e.g. AAPL: momentum-only ≈ 7.4, but 3-factor ≈ 4.8 — its P/B is ~10σ above its
+  sector). `rec_3f` is samar's own label for it.
+- If a name has no P/E or P/B data, the signal falls back to the **momentum-only**
+  percentile.
 
 **`macd` — MACD trend (aarav)**
 - MACD(12/26/9) computed, then scored per timeframe starting from a base of

@@ -138,27 +138,20 @@ def _result(signal: str, ten: float, native_rating: str | None,
 
 
 # ───────────────────────── samar: cross-sectional momentum ──────────────────
-# samar's score is a PERCENTILE RANK of momentum within a reference universe, so
-# the universe choice changes the score. We rank against the S&P 500 — samar's
-# own primary single-ticker mode (run_single, menu option 1) — so the dashboard
-# matches what samar prints standalone. Falls back to samar's curated diverse
-# universe if the index constituents can't be fetched.
-_SAMAR_INDEX_KEY = "A"  # "A" = S&P 500 in samar.INDEXES
+# samar's score is a PERCENTILE RANK within a reference universe, so the universe
+# choice changes the score. We rank against samar's curated ~110-stock
+# sector-diverse universe — i.e. samar.run_vs_diverse — so the dashboard's score
+# matches exactly what samar prints standalone (its "vs diverse" mode).
 _SAMAR_UNIVERSE: dict = {}
 
 
 def _samar_universe(mod: ModuleType):
     if "data" not in _SAMAR_UNIVERSE:
-        try:
-            tickers, index_name, sectors = mod.get_constituents(_SAMAR_INDEX_KEY)
-        except Exception:  # noqa: BLE001 - constituent fetch failed; use diverse set
-            tickers = list(mod.DIVERSE_UNIVERSE)
-            sectors = dict(mod.DIVERSE_UNIVERSE)
-            index_name = "Diverse universe"
+        sectors = dict(mod.DIVERSE_UNIVERSE)
+        tickers = list(mod.DIVERSE_UNIVERSE)
+        index_name = f"diverse {len(tickers)}-stock universe"
         snap = mod.get_market_snapshots()
         momentum_dict, _ = mod.compute_momentum(tickers, snap)
-        with contextlib.suppress(Exception):
-            mod.fill_unknown_sectors(tickers, sectors)
         # Skip build_cap_tiers(): it's by far the slowest step and only feeds the
         # secondary cap-relative z — NOT the score or recommendation.
         cap_tiers: dict = {}
