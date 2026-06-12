@@ -85,12 +85,14 @@ scoring logic**, and the **range it lands on**.
 **`momentum` — cross-sectional momentum (samar)**
 - Inputs: trailing returns → **12-1**, **6-1**, **3-1** month momentum
   (i.e. 12-month return skipping the most recent month, etc.).
-- Each horizon is standardized to a **z-score** against a diverse reference
-  universe (so it's momentum *relative to the market*, not absolute).
-- A combined z-score `z_combined` (blend of the three horizons, with a
-  sector-relative z as a tiebreaker) maps to a **1–10** score; flags for trend
-  strength and the momentum "shape" refine it.
-- High 1–10 = strong positive relative momentum.
+- Each horizon is standardized to a robust **z-score** (median/MAD) across the
+  **S&P 500** constituents, and `z_combined = min(z₃, z₆, z₁₂)` (a name only gets
+  credit if *all three* windows are strong).
+- The **1–10 score is the percentile rank of `z_combined` within the S&P 500**
+  (`1 + pct·9`) — so it's momentum *relative to the index*. This matches samar's
+  own `run_single` vs S&P 500 (its menu option 1). The "shape" (accelerating /
+  fading) is a secondary tiebreaker. Reference index is configurable via
+  `_SAMAR_INDEX_KEY` in `core/adapters.py`.
 
 **`macd` — MACD trend (aarav)**
 - MACD(12/26/9) computed, then scored per timeframe starting from a base of

@@ -15,6 +15,7 @@ Insider labels (cosmo) map to fixed 1-10 anchors so they count in comparisons.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import date, timedelta
 from types import ModuleType
@@ -137,38 +138,56 @@ def _result(signal: str, ten: float, native_rating: str | None,
 
 
 # ───────────────────────── samar: cross-sectional momentum ──────────────────
+# samar's score is a PERCENTILE RANK of momentum within a reference universe, so
+# the universe choice changes the score. We rank against the S&P 500 — samar's
+# own primary single-ticker mode (run_single, menu option 1) — so the dashboard
+# matches what samar prints standalone. Falls back to samar's curated diverse
+# universe if the index constituents can't be fetched.
+_SAMAR_INDEX_KEY = "A"  # "A" = S&P 500 in samar.INDEXES
 _SAMAR_UNIVERSE: dict = {}
 
 
 def _samar_universe(mod: ModuleType):
     if "data" not in _SAMAR_UNIVERSE:
+        try:
+            tickers, index_name, sectors = mod.get_constituents(_SAMAR_INDEX_KEY)
+        except Exception:  # noqa: BLE001 - constituent fetch failed; use diverse set
+            tickers = list(mod.DIVERSE_UNIVERSE)
+            sectors = dict(mod.DIVERSE_UNIVERSE)
+            index_name = "Diverse universe"
         snap = mod.get_market_snapshots()
-        universe = list(mod.DIVERSE_UNIVERSE.keys())
-        momentum_dict, _ = mod.compute_momentum(universe, snap)
-        # Skip build_cap_tiers(): it scrapes constituents for S&P 500/400/600 +
-        # Nasdaq-100 (~1600 tickers) and is by far the slowest step. The
-        # cap-relative z it feeds is only a secondary tiebreaker — the 1-10
-        # score and recommendation come from the diverse-universe z-scores.
+        momentum_dict, _ = mod.compute_momentum(tickers, snap)
+        with contextlib.suppress(Exception):
+            mod.fill_unknown_sectors(tickers, sectors)
+        # Skip build_cap_tiers(): it's by far the slowest step and only feeds the
+        # secondary cap-relative z — NOT the 1-10 score or the recommendation,
+        # which come from the momentum z-scores (so this matches run_single's
+        # score_1_10 exactly).
         cap_tiers: dict = {}
-        results, stats = mod.standardize(momentum_dict, mod.DIVERSE_UNIVERSE, cap_tiers)
-        _SAMAR_UNIVERSE["data"] = (snap, momentum_dict, results, stats, cap_tiers)
+        results, stats = mod.standardize(momentum_dict, sectors, cap_tiers)
+        _SAMAR_UNIVERSE["data"] = (snap, momentum_dict, results, stats,
+                                   cap_tiers, sectors, index_name)
     return _SAMAR_UNIVERSE["data"]
 
 
 def _samar(mod: ModuleType, ticker: str, period: str) -> dict:
     ticker = ticker.upper().strip()
-    snap, momentum_dict, results, stats, cap_tiers = _samar_universe(mod)
+    snap, momentum_dict, results, stats, cap_tiers, sectors, index_name = _samar_universe(mod)
     if ticker in results:
         v = results[ticker]
     else:
         extra, _ = mod.compute_momentum([ticker], snap)
         if ticker not in extra:
             raise ValueError(f"no valid momentum data for {ticker}")
+        sectors_x = dict(sectors)
+        with contextlib.suppress(Exception):
+            sectors_x[ticker] = mod.get_sector_api(ticker) or "Unknown"
         v = mod._score_extra_ticker(ticker, extra[ticker], momentum_dict, results,
-                                    stats, mod.DIVERSE_UNIVERSE, cap_tiers)
+                                    stats, sectors_x, cap_tiers)
     raw = v["score_1_10"]
     sec = v.get("z_combined_sector")
     lines = [
+        f"Ranked vs {index_name} ({len(results)} stocks)",
         f"12-1 mom {v['m12_pct']:+.2f}% (z {v['z12']:+.2f})",
         f"6-1  mom {v['m6_pct']:+.2f}% (z {v['z6']:+.2f})",
         f"3-1  mom {v['m3_pct']:+.2f}% (z {v['z3']:+.2f})",
