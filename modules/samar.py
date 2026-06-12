@@ -384,6 +384,85 @@ def fill_unknown_sectors(tickers, sectors):
         print(f"  Sector fallback (SIC): resolved {filled}/{len(unknown)} unlabeled tickers")
     return sectors
 
+# ── Market regime filter (S&P 500 vs its 200-day moving average) ─────────────
+# Momentum strategies' catastrophic losses cluster when the broad market is
+# below its long-term trend (bear markets and their violent rebounds). Gate:
+# when SPY < its 200-day SMA, BUY/STRONG BUY labels are capped to "HOLD*".
+# Ranking, z-scores, and 1-10/3F scores are NEVER altered -- this caps the
+# action label only. Adopted on external trend-following evidence, not our
+# backtest (our window is too short to contain enough bear markets to test
+# a timing rule). Known cost: lags at recoveries (whipsaw).
+REGIME_LOOKBACK_CAL_DAYS = 320   # ~220 trading days of SPY closes
+REGIME_MA_WINDOW         = 200
+
+_REGIME_CACHE = "unset"   # sentinel: None is a valid cached result (fetch failed)
+
+def get_market_regime(retries=3):
+    """Is SPY above its 200-day simple moving average?
+    Returns {"risk_on": bool, "spy": float, "ma200": float, "date": str},
+    or None if SPY data couldn't be fetched -- callers must FAIL OPEN
+    (rank and label as usual, just don't cap)."""
+    global _REGIME_CACHE
+    if _REGIME_CACHE != "unset":
+        return _REGIME_CACHE
+    frm = (date.today() - timedelta(days=REGIME_LOOKBACK_CAL_DAYS)).isoformat()
+    to  = date.today().isoformat()
+    url = (f"{BASE_URL}/v2/aggs/ticker/SPY/range/1/day/{frm}/{to}"
+           f"?adjusted=true&sort=asc&limit=500&apiKey={API_KEY}")
+    regime = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = json.load(resp)
+            bars = data.get("results") or []
+            closes = [b["c"] for b in bars if b.get("c")]
+            if len(closes) >= REGIME_MA_WINDOW:
+                ma  = sum(closes[-REGIME_MA_WINDOW:]) / REGIME_MA_WINDOW
+                spy = closes[-1]
+                regime = {"risk_on": spy > ma, "spy": spy, "ma200": ma,
+                          "date": date.fromtimestamp(bars[-1]["t"] / 1000).isoformat()}
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+                continue
+            break
+        except Exception:
+            break
+    _REGIME_CACHE = regime
+    return regime
+
+
+def print_regime(regime):
+    if regime is None:
+        print("\n  ⚠ Market regime: UNAVAILABLE (SPY fetch failed) -- "
+              "buy signals NOT capped this run.")
+    elif regime["risk_on"]:
+        print(f"\n  Market regime: RISK-ON  (SPY {regime['spy']:.0f} > 200d MA "
+              f"{regime['ma200']:.0f}, as of {regime['date']}) -- signals uncapped.")
+    else:
+        print(f"\n  Market regime: RISK-OFF (SPY {regime['spy']:.0f} < 200d MA "
+              f"{regime['ma200']:.0f}, as of {regime['date']}) -- "
+              f"BUY/STRONG BUY capped to HOLD*.")
+
+
+def apply_regime_cap(results, regime):
+    """When risk-off, downgrade BUY/STRONG BUY -> 'HOLD*' on both the
+    momentum and 3F labels, in-place. Scores/z's/rankings untouched.
+    No-op when risk-on or when regime data is unavailable (fail open)."""
+    if regime is None or regime["risk_on"]:
+        return
+    for v in results.values():
+        if v.get("recommendation") in ("STRONG BUY", "BUY"):
+            v["recommendation"] = "HOLD*"
+        if v.get("rec_3f") in ("STRONG BUY", "BUY"):
+            v["rec_3f"] = "HOLD*"
+
+
+REGIME_CAP_NOTE = ("  * = capped from BUY/STRONG BUY: market is below its "
+                   "200-day MA, where momentum signals historically fail hardest.")
+
+
 _CAP_TIER_CACHE = None
 
 def build_cap_tiers():
@@ -655,7 +734,7 @@ def get_constituents_from_url(wiki_url, name):
           + (f" (sectors detected)" if sector_col >= 0 else " (no sector column found)"))
     return tickers, name, sectors
 
-# ── Step 2: Pull market-wide prices for 3 dates (3 API calls) ────────────────
+# ── Step 2: Pull market-wide prices for 4 dates (4 API calls) ────────────────
 def get_market_snapshots():
     today = date.today()
 
@@ -709,7 +788,7 @@ def get_market_snapshots():
         "d252": date_252, "d126": date_126, "d63": date_63, "d21": date_21,
     }
 
-# ── Step 3: Compute dual-window momentum ────────────────────────────────────────
+# ── Step 3: Compute multi-window momentum ───────────────────────────────────────
 def compute_momentum(tickers, snap):
     """Returns (momentum_dict, excluded_list).
 
@@ -747,7 +826,7 @@ def compute_momentum(tickers, snap):
 
     return momentum, excluded
 
-# ── Step 4: Standardize (median/MAD) + dual-window combination ────────────────
+# ── Step 4: Standardize (median/MAD) + multi-window combination ───────────────
 def robust_z(values, x, median=None, mad=None):
     """Median/MAD-based z-score. MAD scaled by 1.4826 so it's comparable
     to a standard deviation under a normal-distribution assumption, while
@@ -926,7 +1005,7 @@ def standardize(momentum_dict, sectors=None, cap_tiers=None):
     return combined, stats
 
 # ── Step 5: Export ───────────────────────────────────────────────────────────────
-def export_csv(results, index_name, short_code, sectors=None, excluded=None):
+def export_csv(results, index_name, short_code, sectors=None, excluded=None, regime=None):
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, f"momentum_{short_code}.csv")
     # Primary sort: z_combined (the actual strength signal). Secondary
@@ -950,6 +1029,14 @@ def export_csv(results, index_name, short_code, sectors=None, excluded=None):
         w.writerow([f"#   (blank if sector unknown or sector has < {SECTOR_MIN_GROUP} members -- too few to standardize)"])
         w.writerow(["# z_combined_cap = same as z_combined but vs. peers in the same cap-size tier only"])
         w.writerow([f"#   (blank if cap tier has < {SECTOR_MIN_GROUP} members -- too few to standardize)"])
+        if regime is not None:
+            state = "RISK-ON" if regime["risk_on"] else "RISK-OFF"
+            w.writerow([f"# market_regime = {state} (SPY {regime['spy']:.2f} vs 200d MA "
+                        f"{regime['ma200']:.2f}, as of {regime['date']})"])
+            if not regime["risk_on"]:
+                w.writerow(["# HOLD* = capped from BUY/STRONG BUY because market is below its 200-day MA"])
+        else:
+            w.writerow(["# market_regime = UNAVAILABLE (SPY fetch failed; buy signals not capped)"])
         if excluded:
             w.writerow([f"# Excluded ({len(excluded)}): " + ", ".join(excluded)])
         w.writerow([])
@@ -1221,7 +1308,7 @@ def run(index_key):
     snap = get_market_snapshots()
 
     print(f"\n{'─'*60}")
-    print(f"STEP 3 — Computing dual-window momentum for {len(tickers)} constituents")
+    print(f"STEP 3 — Computing multi-window momentum for {len(tickers)} constituents")
     print(f"{'─'*60}")
     momentum_dict, excluded = compute_momentum(tickers, snap)
     print(f"  {len(momentum_dict)} stocks with valid data")
@@ -1235,7 +1322,12 @@ def run(index_key):
     print(f"  {n_strong} of {len(results)} stocks classified 'strong' (all 3 windows z > {MIN_STRENGTH_Z})")
 
     add_value_scores(tickers, snap, sectors, results)
-    rows = export_csv(results, index_name, short_code, sectors, excluded)
+
+    regime = get_market_regime()
+    print_regime(regime)
+    apply_regime_cap(results, regime)
+
+    rows = export_csv(results, index_name, short_code, sectors, excluded, regime)
 
     n = min(TOP_N, len(rows))
     print(f"\n{'─'*60}")
@@ -1274,6 +1366,8 @@ def run(index_key):
               f"nearly identical to Zcomb and not a meaningful diversification check.")
     print(f"  Recommendation = a label derived purely from this script's z-score/shape math, "
           f"NOT a backtested or validated trading signal -- treat as a relative-strength summary.")
+    if regime is not None and not regime["risk_on"]:
+        print(REGIME_CAP_NOTE)
 
     # ── 3-Factor top 10 ──────────────────────────────────────────────────────
     rows_3f = sorted(
@@ -1411,7 +1505,13 @@ def run_single(ticker, index_key):
         print(f"\n  Note: {ticker} is not a constituent of {index_name} -- "
               f"scored against the index's distribution, not included in it.")
 
+    regime = get_market_regime()
+    print_regime(regime)
+    apply_regime_cap({ticker: v}, regime)
     _print_single_result(ticker, v, sectors, cap_tiers, f"{ticker} — Multi-Window Momentum vs {index_name}")
+    if regime is not None and not regime["risk_on"] and (
+            v.get("recommendation") == "HOLD*" or v.get("rec_3f") == "HOLD*"):
+        print(REGIME_CAP_NOTE)
 
 
 def run_vs_diverse(ticker):
@@ -1457,8 +1557,14 @@ def run_vs_diverse(ticker):
         print(f"\n  Note: {ticker} is not part of the diverse universe -- "
               f"scored against it, not included in it.")
 
+    regime = get_market_regime()
+    print_regime(regime)
+    apply_regime_cap({ticker: v}, regime)
     _print_single_result(ticker, v, sectors_x, cap_tiers,
                           f"{ticker} — Multi-Window Momentum vs Diverse {len(universe)}-Stock Universe")
+    if regime is not None and not regime["risk_on"] and (
+            v.get("recommendation") == "HOLD*" or v.get("rec_3f") == "HOLD*"):
+        print(REGIME_CAP_NOTE)
 
 
 
@@ -1515,6 +1621,10 @@ def scan_best(top_n=10):
     results, stats = standardize(momentum_dict, all_sectors, cap_tiers)
     add_value_scores(universe, snap, all_sectors, results)
 
+    regime = get_market_regime()
+    print_regime(regime)
+    apply_regime_cap(results, regime)
+
     # "Best" = momentum currently building/recovering (ACCELERATING or DIP)
     # AND ranked by z_combined within that subset.
     candidates = [(t, v) for t, v in results.items() if v["shape"] in ("ACCELERATING", "DIP")]
@@ -1549,6 +1659,8 @@ def scan_best(top_n=10):
         print(f"\n  Cap = crude size tier by index membership (Large = S&P500/Nasdaq100, Mid = S&P MidCap 400).")
         print(f"  3F = 3-factor score (Momentum + P/E + P/B average percentile rank, 1-10 scale).")
         print(f"  Call shows reason when 3F unavailable: NO P/E = negative/zero earnings; NO P/B = negative equity; NO SECTOR DATA = sector too small.")
+        if regime is not None and not regime["risk_on"]:
+            print(REGIME_CAP_NOTE)
 
     if not candidates:
         print("  None found -- no stock in this universe is currently ACCELERATING or DIP.")
