@@ -169,8 +169,8 @@ class Dashboard(tk.Tk):
 
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
-        self.fig = Figure(figsize=(9, 4.4), dpi=100, facecolor="white")
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[1.7, 1])
+        self.fig = Figure(figsize=(9.5, 4.4), dpi=100, facecolor="white")
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[2.2, 1])
         self.ax_price = self.fig.add_subplot(gs[0])
         self.ax_sig = self.fig.add_subplot(gs[1])
         for ax in (self.ax_price, self.ax_sig):

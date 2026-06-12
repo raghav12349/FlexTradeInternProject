@@ -15,14 +15,38 @@ ORANGE = "#E08E0B"
 GREEN = "#2e9e3f"
 RED = "#c0392b"
 GREY = "#9aa0a6"
+PURPLE = "#7b4fb3"
+BAND = "#8a94a6"
+
+# Overlay windows. EMA span and the Bollinger window/σ are standard defaults.
+SMA_WINDOWS = (20, 50, 200)
+EMA_SPAN = 20
+BB_WINDOW = 20
+BB_STD = 2.0
+_SMA_COLORS = {20: TEAL, 50: ORANGE, 200: PURPLE}
 
 
-def _sma(closes: list[float], window: int) -> list[float]:
-    return pd.Series(closes).rolling(window, min_periods=max(2, window // 2)).mean().tolist()
+def _sma(closes: list[float], window: int) -> pd.Series:
+    return pd.Series(closes).rolling(window, min_periods=max(2, window // 2)).mean()
+
+
+def _ema(closes: list[float], span: int) -> pd.Series:
+    return pd.Series(closes).ewm(span=span, adjust=False, min_periods=span).mean()
+
+
+def _bollinger(closes: list[float], window: int, n_std: float):
+    s = pd.Series(closes)
+    mid = s.rolling(window, min_periods=window).mean()
+    sd = s.rolling(window, min_periods=window).std()
+    return mid, mid + n_std * sd, mid - n_std * sd
 
 
 def draw_price(ax, bars: list[dict], ticker: str, period: str) -> float | None:
-    """Price line + SMA50/SMA200 overlay. Returns % change over the window."""
+    """Price line with SMA 20/50/200, EMA 20 and Bollinger Band overlays.
+
+    Every overlay is computed from the closing prices in `bars` (no extra data
+    fetch). Returns the % change over the window.
+    """
     ax.clear()
     closes = [b["c"] for b in bars] if bars else []
     if len(closes) < 2:
@@ -36,16 +60,27 @@ def draw_price(ax, bars: list[dict], ticker: str, period: str) -> float | None:
     else:
         xs = list(range(len(closes)))
 
+    # Bollinger Bands drawn first so they sit behind the price line.
+    if len(closes) >= BB_WINDOW:
+        _, upper, lower = _bollinger(closes, BB_WINDOW, BB_STD)
+        ax.plot(xs, upper, color=BAND, lw=0.8, ls=":", alpha=0.8)
+        ax.plot(xs, lower, color=BAND, lw=0.8, ls=":", alpha=0.8,
+                label=f"Bollinger {BB_WINDOW}·{BB_STD:g}σ")
+        ax.fill_between(xs, lower, upper, color=BAND, alpha=0.08)
+
     ax.plot(xs, closes, color=NAVY, lw=1.6, label="Close")
-    ax.fill_between(xs, closes, min(closes), color=NAVY, alpha=0.06)
-    for w, c in ((50, TEAL), (200, ORANGE)):
-        if len(closes) >= w:
-            ax.plot(xs, _sma(closes, w), color=c, lw=1.1, label=f"SMA {w}")
+
+    for w in SMA_WINDOWS:
+        if len(closes) >= max(2, w // 2):
+            ax.plot(xs, _sma(closes, w), color=_SMA_COLORS[w], lw=1.1, label=f"SMA {w}")
+    if len(closes) >= EMA_SPAN:
+        ax.plot(xs, _ema(closes, EMA_SPAN), color=GREEN, lw=1.1, ls="--",
+                label=f"EMA {EMA_SPAN}")
 
     chg = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0.0
     ax.set_title(f"{ticker} price · {period}   ({chg:+.1f}%)",
                  fontsize=11, fontweight="bold", color=NAVY, loc="left")
-    ax.legend(loc="upper left", fontsize=8, frameon=False)
+    ax.legend(loc="upper left", fontsize=7, frameon=False, ncol=2)
     ax.grid(True, alpha=0.25, lw=0.5)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
