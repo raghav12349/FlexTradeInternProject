@@ -1668,12 +1668,21 @@ def scan_best(top_n=10):
 
 
 def _run_index_menu(index_key):
+    # Single-ticker scoring ALWAYS uses the fixed diverse 110-stock universe,
+    # never the chosen index. Reason: index constituent lists shift (Wikipedia
+    # edits, rebalances), so two people scanning the same ticker on different
+    # days/machines got different scores. The diverse universe is hardcoded
+    # and identical for everyone -- same ticker, same peer group, same score.
+    # (run_single() still exists for deliberate vs-index scoring from code.)
     print(f"\n  1. Top 10 ranked stocks in this index")
-    print(f"  2. Score a single stock against this index")
+    print(f"  2. Score a single stock (vs the standard diverse 110-stock universe)")
     mode = input("Choose (1 or 2): ").strip()
     if mode == "2":
         sym = input("Enter ticker symbol: ").strip()
-        run_single(sym, index_key)
+        print(f"\n  Note: single-ticker scores are always computed against the fixed "
+              f"110-stock diverse universe (not {INDEXES[index_key][0]}) so results "
+              f"are identical for every user.")
+        run_vs_diverse(sym)
     else:
         run(index_key)
 
