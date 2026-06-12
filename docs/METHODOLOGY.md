@@ -82,16 +82,20 @@ scoring logic**, and the **range it lands on**.
 
 ### Technicals
 
-**`momentum` — cross-sectional momentum (samar)**
-- Inputs: trailing returns → **12-1**, **6-1**, **3-1** month momentum
-  (i.e. 12-month return skipping the most recent month, etc.).
-- Each horizon is standardized to a robust **z-score** (median/MAD) across the
-  **S&P 500** constituents, and `z_combined = min(z₃, z₆, z₁₂)` (a name only gets
-  credit if *all three* windows are strong).
-- The **1–10 score is the percentile rank of `z_combined` within the S&P 500**
-  (`1 + pct·9`) — so it's momentum *relative to the index*. This matches samar's
-  own `run_single` vs S&P 500 (its menu option 1). The "shape" (accelerating /
-  fading) is a secondary tiebreaker. Reference index is configurable via
+**`momentum` — 3-factor momentum + value (samar)**
+- **Momentum inputs:** trailing returns → **12-1**, **6-1**, **3-1** month
+  momentum, each standardized to a robust **z-score** (median/MAD) across the
+  **S&P 500**; `z_combined = min(z₃, z₆, z₁₂)` (credit only if *all three*
+  windows are strong). The sector-relative version is `z_combined_sector`.
+- **Value inputs:** **P/E** and **P/B** for every S&P 500 name, each turned into
+  a **sector-relative z-score** (cheap stock vs its sector peers).
+- **Headline score (`score_3f`)** = the average **percentile rank** of three
+  factors — sector-momentum z, P/E z, and P/B z — scaled to 1–10. So a name with
+  great momentum but an expensive valuation (high P/E / P/B) is pulled toward the
+  middle (e.g. NVDA: momentum-only ≈ 9.4, but 3-factor ≈ 5.5). This is the score
+  samar shows standalone (`run_single` vs S&P 500, menu option 1).
+- If a name has no P/E or P/B data, the signal falls back to the
+  **momentum-only** percentile. Reference index is configurable via
   `_SAMAR_INDEX_KEY` in `core/adapters.py`.
 
 **`macd` — MACD trend (aarav)**

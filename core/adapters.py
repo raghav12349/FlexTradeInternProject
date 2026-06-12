@@ -160,11 +160,14 @@ def _samar_universe(mod: ModuleType):
         with contextlib.suppress(Exception):
             mod.fill_unknown_sectors(tickers, sectors)
         # Skip build_cap_tiers(): it's by far the slowest step and only feeds the
-        # secondary cap-relative z — NOT the 1-10 score or the recommendation,
-        # which come from the momentum z-scores (so this matches run_single's
-        # score_1_10 exactly).
+        # secondary cap-relative z — NOT the score or recommendation.
         cap_tiers: dict = {}
         results, stats = mod.standardize(momentum_dict, sectors, cap_tiers)
+        # Attach P/E + P/B value z-scores and the 3-factor score (samar's headline
+        # single-ticker score = blend of sector-momentum, P/E and P/B). Best-effort:
+        # if fundamentals can't be fetched we still have the momentum-only score.
+        with contextlib.suppress(Exception):
+            mod.add_value_scores(tickers, snap, sectors, results)
         _SAMAR_UNIVERSE["data"] = (snap, momentum_dict, results, stats,
                                    cap_tiers, sectors, index_name)
     return _SAMAR_UNIVERSE["data"]
@@ -184,19 +187,47 @@ def _samar(mod: ModuleType, ticker: str, period: str) -> dict:
             sectors_x[ticker] = mod.get_sector_api(ticker) or "Unknown"
         v = mod._score_extra_ticker(ticker, extra[ticker], momentum_dict, results,
                                     stats, sectors_x, cap_tiers)
-    raw = v["score_1_10"]
+        # Value scores for the extra ticker (mirrors samar.run_single).
+        with contextlib.suppress(Exception):
+            filings = mod._fetch_financials(ticker)
+            price = snap["p21"].get(ticker)
+            v["pe_ratio"] = mod._pe_ratio(filings, price)
+            v["pb_ratio"] = mod._pb_ratio(filings, price)
+            mod._extra_value_scores(ticker, v, sectors_x.get(ticker, "Unknown"),
+                                    results, sectors_x)
+
+    # Headline = samar's 3-Factor score (momentum + P/E + P/B), which is what
+    # samar prints/uses standalone. Fall back to the momentum-only percentile
+    # when a name has no P/E or P/B data (3-factor undefined).
+    mom = v["score_1_10"]
+    s3 = v.get("score_3f")
+    if s3 is not None:
+        raw = s3
+        rating = v.get("rec_3f") or v["recommendation"]
+        headline = f"3-Factor score {raw:.1f}/10 → {rating}  (momentum-only {mom:.1f})"
+    else:
+        raw = mom
+        rating = v["recommendation"]
+        headline = f"Momentum-only score {raw:.1f}/10 → {rating}  (no P/E or P/B data)"
+
     sec = v.get("z_combined_sector")
+    pe, pb = v.get("pe_ratio"), v.get("pb_ratio")
+    pe_z, pb_z = v.get("pe_z"), v.get("pb_z")
     lines = [
         f"Ranked vs {index_name} ({len(results)} stocks)",
-        f"12-1 mom {v['m12_pct']:+.2f}% (z {v['z12']:+.2f})",
-        f"6-1  mom {v['m6_pct']:+.2f}% (z {v['z6']:+.2f})",
-        f"3-1  mom {v['m3_pct']:+.2f}% (z {v['z3']:+.2f})",
+        headline,
+        f"12-1 {v['m12_pct']:+.1f}% (z {v['z12']:+.2f}) · 6-1 {v['m6_pct']:+.1f}% "
+        f"(z {v['z6']:+.2f}) · 3-1 {v['m3_pct']:+.1f}% (z {v['z3']:+.2f})",
         f"Combined z {v['z_combined']:+.2f}  strong={v['is_strong']}  shape={v['shape']}"
         + (f"  sector-rel z {sec:+.2f}" if sec is not None else ""),
-        f"Score {raw:.1f}/10 -> {v['recommendation']}",
+        (f"P/E {pe:.1f} (sector z {pe_z:+.2f})" if pe is not None and pe_z is not None
+         else "P/E: n/a"),
+        (f"P/B {pb:.2f} (sector z {pb_z:+.2f})" if pb is not None and pb_z is not None
+         else "P/B: n/a"),
     ]
-    return _result("momentum", raw, v["recommendation"], lines,
-                   {"score_1_10": raw, "z_combined": v["z_combined"]})
+    return _result("momentum", raw, rating, lines,
+                   {"score_1_10": mom, "score_3f": s3, "z_combined": v["z_combined"],
+                    "pe_ratio": pe, "pb_ratio": pb})
 
 
 # ───────────────────────── justin: financial ratios ─────────────────────────
