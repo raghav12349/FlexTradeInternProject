@@ -82,7 +82,7 @@ def analyze_ticker(ticker: str, period: str = "2y", use_cache: bool = True) -> d
     # Suppress module stdout and run signals in parallel. redirect_stdout is
     # global, so it wraps the whole concurrent section.
     with contextlib.redirect_stdout(io.StringIO()):
-        ex = ThreadPoolExecutor(max_workers=min(10, len(entries)))
+        ex = ThreadPoolExecutor(max_workers=min(3, len(entries)))
         futures = {e["name"]: ex.submit(_run_one, e, ticker, period) for e in entries}
         for e in entries:
             try:

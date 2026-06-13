@@ -98,19 +98,28 @@ def fetch_sma_series(symbol, window, limit=260):
     Returns a list of {"timestamp": ms, "value": float} dicts, oldest first.
     limit=260 covers ~1 trading year — enough to detect 50/200 crossovers.
     """
-    sma = client.get_sma(
-        ticker=symbol,
-        timespan="day",
-        adjusted="true",
-        window=str(window),
-        series_type="close",
-        order="desc",
-        limit=str(limit),
-    )
-    values = getattr(sma, "values", None) or []
-    series = [{"timestamp": v.timestamp, "value": v.value} for v in values]
-    series.reverse()  # API returns newest-first; flip to chronological
-    return series
+    import time
+    last_exc = None
+    for attempt in range(5):
+        if attempt:
+            time.sleep(3.0 * attempt)
+        try:
+            sma = client.get_sma(
+                ticker=symbol,
+                timespan="day",
+                adjusted="true",
+                window=str(window),
+                series_type="close",
+                order="desc",
+                limit=str(limit),
+            )
+            values = getattr(sma, "values", None) or []
+            series = [{"timestamp": v.timestamp, "value": v.value} for v in values]
+            series.reverse()  # API returns newest-first; flip to chronological
+            return series
+        except Exception as exc:
+            last_exc = exc
+    raise ValueError(f"no sma data for {symbol} window={window}: {last_exc}")
 
 
 def compute_context(prices_dict):

@@ -73,6 +73,7 @@ def fetch_rsi_series(symbol, window=14, limit=500):
     Returns a list of {"timestamp": ms, "value": float} dicts, newest first.
     limit=500 covers ~2 years of trading days.
     """
+    import time
     url = f"{BASE_URL}/v1/indicators/rsi/{symbol}"
     params = {
         "timespan":    "day",
@@ -83,9 +84,17 @@ def fetch_rsi_series(symbol, window=14, limit=500):
         "limit":       limit,
         "apiKey":      API_KEY,
     }
-    r = requests.get(url, params=params)
-    data = r.json()
-    return data.get("results", {}).get("values", [])
+    for attempt in range(5):
+        if attempt:
+            time.sleep(3.0 * attempt)
+        r = requests.get(url, params=params)
+        if r.status_code == 429:
+            continue
+        data = r.json()
+        if data.get("status") not in ("OK", "DELAYED"):
+            raise ValueError(f"RSI fetch failed for {symbol}: {data.get('message') or data.get('status')}")
+        return data.get("results", {}).get("values", [])
+    raise ValueError(f"RSI fetch rate-limited for {symbol} after 5 attempts")
 
 
 def compute_context(prices_dict):
